@@ -31,26 +31,33 @@
     var sessions = await must(sb.from('support_sessions')
       .select('id, teacher_id, assistant_id, starts_at, ends_at, status, support_session_students(students(full_name))')
       .eq('status', 'planned').gte('ends_at', nowIso).order('starts_at').limit(3));
+    var meets = await must(sb.from('meetings')
+      .select('id, teacher_id, guest_id, kind, starts_at, ends_at, meeting_url')
+      .eq('status', 'planned').gte('ends_at', nowIso).order('starts_at').limit(3));
     var events = await must(sb.from('personal_events')
       .select('id, title, due_at').eq('done', false).order('due_at').limit(5));
 
     var hostIds = uniqIds(upcoming.map(function (l) { return l.teacher_id; })
-      .concat(sessions.map(function (s) { return s.assistant_id; })).concat([me]));
+      .concat(sessions.map(function (s) { return s.assistant_id; }))
+      .concat(meets.map(function (m) { return m.teacher_id; })).concat([me]));
     var rooms = await App.rooms(hostIds);
-    var names = await App.names(hostIds.concat(sessions.map(function (s) { return s.teacher_id; })));
+    var names = await App.names(hostIds.concat(sessions.map(function (s) { return s.teacher_id; }))
+      .concat(meets.map(function (m) { return m.guest_id; })));
 
     var tiles = '';
     if (role === 'teacher' && !App.canTeach()) {
-      tiles += '<a class="tile" href="#/credentials"><strong>Πιστοποιητικά και έγκριση</strong><span>Χρειάζεται έγκριση για να διδάξεις</span></a>';
+      tiles += '<a class="tile" href="#/credentials"><strong>Πιστοποιητικά και έγκριση</strong><span>Είσαι βοηθητικός· για δικούς σου μαθητές χρειάζεται έγκριση</span></a>';
     }
-    if (App.canTeach()) {
-      tiles += '<a class="tile" href="#/students"><strong>Μαθητές</strong><span>Μαθητές, γονείς και βοηθοί</span></a>';
+    if (App.canTeach() || role === 'teacher') {
+      tiles += '<a class="tile" href="#/students"><strong>Μαθητές</strong><span>' + (App.canTeach() ? 'Μαθητές, γονείς και βοηθοί' : 'Μαθητές όπου είσαι βοηθός') + '</span></a>';
     }
-    if (role === 'teacher' && App.canTeach()) {
-      tiles += '<a class="tile" href="#/requests"><strong>Αιτήματα</strong><span>Γονείς που ζητούν συνεργασία</span></a>';
+    if (role === 'teacher') {
+      if (App.canTeach()) {
+        tiles += '<a class="tile" href="#/requests"><strong>Αιτήματα</strong><span>Γονείς που ζητούν συνεργασία</span></a>';
+      }
       tiles += '<a class="tile" href="#/teachers"><strong>Συνεργάτες</strong><span>Άλλοι εκπαιδευτικοί και βοηθοί</span></a>';
     }
-    if (role === 'student') {
+    if (App.canRequest()) {
       tiles += '<a class="tile" href="#/teachers"><strong>Εκπαιδευτικοί</strong><span>Βρες εκπαιδευτικό και στείλε αίτημα</span></a>';
     }
     tiles += '<a class="tile" href="#/calendar"><strong>Ημερολόγιο / Παρουσιολόγιο</strong><span>Προγραμματισμένες και πραγματοποιημένες ώρες</span></a>';
@@ -74,7 +81,7 @@
     }
 
     var nextHtml;
-    if (!upcoming.length && !sessions.length) {
+    if (!upcoming.length && !sessions.length && !meets.length) {
       nextHtml = '<p class="empty">Δεν υπάρχει προγραμματισμένο μάθημα.</p>';
     } else {
       nextHtml = '<table><tbody>' + upcoming.map(function (l) {
@@ -86,6 +93,11 @@
         return '<tr><td><strong>' + esc(fmt(s.starts_at)) + '</strong></td>' +
           '<td>Υποστήριξη: ' + esc(who) + ' <span class="muted">(' + esc(names[s.assistant_id] || 'βοηθός') + ')</span></td>' +
           '<td>' + App.joinButton(App.joinUrl(s, rooms, s.assistant_id) || App.joinUrl(s, rooms, s.teacher_id)) + '</td></tr>';
+      }).join('') + meets.map(function (m) {
+        var other = m.guest_id === me ? names[m.teacher_id] : names[m.guest_id];
+        return '<tr><td><strong>' + esc(fmt(m.starts_at)) + '</strong></td>' +
+          '<td>' + esc(App.MEETING_KIND[m.kind]) + ': ' + esc(other || '') + '</td>' +
+          '<td>' + App.joinButton(App.joinUrl(m, rooms, m.teacher_id)) + '</td></tr>';
       }).join('') + '</tbody></table>';
     }
 
@@ -156,9 +168,19 @@
     var lessons = await must(lq.limit(300));
     var sessions = await must(sq.limit(300));
 
+    var mq = sb.from('meetings')
+      .select('id, teacher_id, guest_id, kind, student_id, starts_at, ends_at, meeting_url, status, notes, students(full_name)')
+      .order('starts_at', { ascending: asc });
+    if (calFilter.period === 'upcoming') { mq = mq.gte('ends_at', nowIso); }
+    if (calFilter.period === 'past') { mq = mq.lt('ends_at', nowIso); }
+    if (calFilter.student) { mq = mq.eq('student_id', calFilter.student); }
+    var meetings = await must(mq.limit(300));
+
     var hostIds = uniqIds(lessons.map(function (l) { return l.teacher_id; })
       .concat(sessions.map(function (s) { return s.assistant_id; }))
-      .concat(sessions.map(function (s) { return s.teacher_id; })));
+      .concat(sessions.map(function (s) { return s.teacher_id; }))
+      .concat(meetings.map(function (m) { return m.teacher_id; }))
+      .concat(meetings.map(function (m) { return m.guest_id; })));
     var rooms = await App.rooms(hostIds);
     var names = await App.names(hostIds);
 
@@ -209,6 +231,36 @@
         : '<p class="empty">Πρόσθεσε πρώτα μαθητές.</p>') +
       '</div>'
       : '';
+
+    // Επιλογές «μαθητής — γονέας» για συνάντηση με γονέα.
+    var parentRows = [];
+    if (write && mineStudents.length) {
+      parentRows = await must(sb.from('student_parents').select('student_id, parent_id')
+        .in('student_id', mineStudents.map(function (s) { return s.id; })));
+    }
+    var parentNames = parentRows.length
+      ? await App.names(uniqIds(parentRows.map(function (r) { return r.parent_id; }))) : {};
+    var newMeeting = '';
+    if (write) {
+      newMeeting = '<div class="card"><h2>Συνάντηση με γονέα</h2>' +
+        '<p class="muted">Συνάντηση στην πλατφόρμα για την πρόοδο ενός μαθητή. Ο γονέας τη βλέπει στο ημερολόγιό του και μπαίνει με το κουμπί «Σύνδεση». Τα ραντεβού γνωριμίας με νέους γονείς τα κλείνεις από τη σελίδα Αιτήματα.</p>' +
+        (parentRows.length
+          ? '<form data-form="add-meeting" class="spaced">' +
+          '<div><label for="m-who">Μαθητής — γονέας</label><select id="m-who" name="who">' +
+          parentRows.map(function (r) {
+            var st = mineStudents.filter(function (s) { return s.id === r.student_id; })[0];
+            return '<option value="' + esc(r.student_id) + '|' + esc(r.parent_id) + '">' +
+              esc(st ? st.full_name : '') + ' — ' + esc(parentNames[r.parent_id] || 'Γονέας') + '</option>';
+          }).join('') + '</select></div>' +
+          '<div class="row">' +
+          '<div><label for="m-start">Έναρξη</label><input id="m-start" name="start" type="datetime-local" value="' + App.toLocalInput(start) + '" required></div>' +
+          '<div><label for="m-dur">Διάρκεια (λεπτά)</label><input id="m-dur" name="duration" type="number" min="15" max="240" step="15" value="30" required></div>' +
+          '<div><label for="m-url">Ειδικός σύνδεσμος (προαιρετικό)</label><input id="m-url" name="url" type="url" placeholder="https://…"></div>' +
+          '<div><label for="m-notes">Σημείωση</label><input id="m-notes" name="notes" maxlength="500"></div>' +
+          '</div><button class="primary" type="submit">Προσθήκη συνάντησης</button></form>'
+          : '<p class="empty">Δεν υπάρχουν γονείς συνδεδεμένοι με τους μαθητές σου. Πρόσθεσέ τους από τη σελίδα του μαθητή.</p>') +
+        '</div>';
+    }
 
     var newSupport = '';
     if (write) {
@@ -276,8 +328,27 @@
         '</tr>';
     }).join('');
 
+    var meetingRows = meetings.map(function (m) {
+      var mine = App.ownsTeacher(m.teacher_id);
+      var live = new Date(m.ends_at).getTime() > now;
+      var other = m.guest_id === me ? 'Εκπαιδευτικός: ' + (names[m.teacher_id] || '') : (names[m.guest_id] || 'Καλεσμένος');
+      return '<tr><td>' + esc(fmt(m.starts_at)) + ' <span class="muted">(' + hours(m).toFixed(1) + ' ω)</span></td>' +
+        '<td>' + esc(App.MEETING_KIND[m.kind]) + '</td>' +
+        '<td>' + esc(other) + (m.students ? '<br><span class="muted">Μαθητής: ' + esc(m.students.full_name) + '</span>' : '') +
+        (m.notes ? '<br><span class="muted">' + esc(m.notes) + '</span>' : '') + '</td>' +
+        '<td>' + (mine
+          ? '<select data-change="meeting-status" data-id="' + esc(m.id) + '">' +
+          Object.keys(App.SUPPORT_STATUS).map(function (k) {
+            return '<option value="' + k + '"' + (k === m.status ? ' selected' : '') + '>' + esc(App.SUPPORT_STATUS[k]) + '</option>';
+          }).join('') + '</select>'
+          : '<span class="badge ' + esc(m.status) + '">' + esc(App.SUPPORT_STATUS[m.status]) + '</span>') + '</td>' +
+        '<td>' + (live && m.status === 'planned' ? App.joinButton(App.joinUrl(m, rooms, m.teacher_id)) : '<span class="muted">—</span>') + '</td>' +
+        (write ? '<td>' + (mine ? '<button class="danger" data-action="delete-meeting" data-id="' + esc(m.id) + '">Διαγραφή</button>' : '') + '</td>' : '') +
+        '</tr>';
+    }).join('');
+
     view.innerHTML =
-      '<h1>Ημερολόγιο / Παρουσιολόγιο</h1>' + newLesson + newSupport +
+      '<h1>Ημερολόγιο / Παρουσιολόγιο</h1>' + newLesson + newMeeting + newSupport +
       '<div class="card"><div class="row">' +
       '<div><label for="f-student">Μαθητής</label><select id="f-student" data-change="cal-filter-student"><option value="">Όλοι</option>' + studentOptions + '</select></div>' +
       '<div><label for="f-period">Περίοδος</label><select id="f-period" data-change="cal-filter-period">' +
@@ -299,6 +370,12 @@
       (lessons.length
         ? '<table><thead><tr><th>Πότε</th><th>Μαθητές και παρουσία</th><th>Δωμάτιο</th>' + (write ? '<th></th>' : '') + '</tr></thead><tbody>' + lessonRows + '</tbody></table>'
         : '<p class="empty">Δεν υπάρχουν μαθήματα.</p>') +
+      '</div>' +
+
+      '<div class="card"><h2>Ραντεβού και συναντήσεις γονέων</h2>' +
+      (meetings.length
+        ? '<table><thead><tr><th>Πότε</th><th>Είδος</th><th>Με ποιον</th><th>Κατάσταση</th><th>Δωμάτιο</th>' + (write ? '<th></th>' : '') + '</tr></thead><tbody>' + meetingRows + '</tbody></table>'
+        : '<p class="empty">Δεν υπάρχουν ραντεβού.</p>') +
       '</div>' +
 
       '<div class="card"><h2>Ώρες υποστήριξης βοηθών</h2>' +
@@ -340,6 +417,21 @@
     await App.pages.calendar();
   };
 
+  App.forms['add-meeting'] = async function (f) {
+    var parts = f.elements['who'].value.split('|');
+    var r = timeRange(f);
+    await must(sb.rpc('create_meeting', {
+      p_guest: parts[1],
+      p_kind: 'parent',
+      p_student: parts[0],
+      p_start: r.start,
+      p_end: r.end,
+      p_url: f.elements['url'].value.trim(),
+      p_notes: f.elements['notes'].value.trim()
+    }));
+    await App.pages.calendar();
+  };
+
   App.forms['add-support'] = async function (f) {
     var ids = checkedStudents(f);
     if (!ids.length) { throw new Error('Διάλεξε τουλάχιστον έναν μαθητή.'); }
@@ -372,6 +464,18 @@
     await App.pages.calendar();
   };
 
+  App.changes['meeting-status'] = async function (t) {
+    var rows = await must(sb.from('meetings').update({ status: t.value })
+      .eq('id', t.getAttribute('data-id')).select('id'));
+    if (!rows.length) { throw new Error('Η αλλαγή δεν εφαρμόστηκε.'); }
+    await App.pages.calendar();
+  };
+  App.actions['delete-meeting'] = async function (t) {
+    if (!confirm('Διαγραφή ραντεβού;')) { return; }
+    var rows = await must(sb.from('meetings').delete().eq('id', t.getAttribute('data-id')).select('id'));
+    if (!rows.length) { throw new Error('Η διαγραφή δεν εφαρμόστηκε.'); }
+    await App.pages.calendar();
+  };
   App.actions['delete-lesson'] = async function (t) {
     if (!confirm('Διαγραφή μαθήματος για όλους τους μαθητές του;')) { return; }
     var rows = await must(sb.from('lessons').delete().eq('id', t.getAttribute('data-id')).select('id'));

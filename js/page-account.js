@@ -18,8 +18,10 @@
       '<form data-form="auth">' +
       (reg ? '<label for="a-name">Ονοματεπώνυμο</label><input id="a-name" name="name" required>' : '') +
       (reg ? '<label for="a-type">Εγγράφομαι ως</label><select id="a-type" name="account_type">' +
-        '<option value="student">Μαθητής ή γονέας</option>' +
-        '<option value="teacher">Εκπαιδευτικός (απαιτεί έγκριση)</option></select>' : '') +
+        '<option value="family">Γονέας ή ενήλικος μαθητής</option>' +
+        '<option value="student">Μαθητής (ανήλικος)</option>' +
+        '<option value="teacher">Εκπαιδευτικός</option></select>' : '') +
+      (reg ? '<p class="muted">Ο εκπαιδευτικός ξεκινά ως <strong>βοηθητικός</strong>: συνεργάζεται και βοηθά μαθητές άλλων. Για να έχει δικούς του μαθητές χρειάζεται έγκριση με πιστοποιητικά. Το αίτημα συνεργασίας σε εκπαιδευτικό το στέλνει ο γονέας ή ο ενήλικος μαθητής.</p>' : '') +
       '<label for="a-email">Email</label><input id="a-email" name="email" type="email" required>' +
       '<label for="a-pass">Κωδικός</label><input id="a-pass" name="password" type="password" minlength="8" required>' +
       '<p><button class="primary" type="submit">' + (reg ? 'Εγγραφή' : 'Είσοδος') + '</button></p>' +
@@ -65,14 +67,14 @@
     var role = st.profile.role;
     var items = [['#/', 'Αρχική', 'home']];
     if (role === 'teacher') { items.push(['#/credentials', 'Πιστοποιητικά', 'credentials']); }
-    if (App.canTeach()) { items.push(['#/students', 'Μαθητές', 'students']); }
-    if (role === 'teacher' && App.canTeach()) {
-      items.push(['#/requests', 'Αιτήματα', 'requests']);
+    if (App.canTeach() || role === 'teacher') { items.push(['#/students', 'Μαθητές', 'students']); }
+    if (role === 'teacher') {
+      if (App.canTeach()) { items.push(['#/requests', 'Αιτήματα', 'requests']); }
       items.push(['#/teachers', 'Συνεργάτες', 'teachers']);
     }
     items.push(['#/calendar', 'Ημερολόγιο', 'calendar']);
     items.push(['#/personal', 'Προσωπικό', 'personal']);
-    if (role === 'student') { items.push(['#/teachers', 'Εκπαιδευτικοί', 'teachers']); }
+    if (App.canRequest()) { items.push(['#/teachers', 'Εκπαιδευτικοί', 'teachers']); }
     if (role === 'admin') {
       items.push(['#/approvals', 'Εγκρίσεις', 'approvals']);
       items.push(['#/users', 'Χρήστες', 'users']);
@@ -81,7 +83,7 @@
       return '<a href="' + i[0] + '"' + (i[2] === active ? ' class="active"' : '') + '>' + esc(i[1]) + '</a>';
     }).join('');
     var tag = App.ROLE_LABEL[role];
-    if (role === 'teacher' && !App.canTeach()) { tag += ' (σε αναμονή έγκρισης)'; }
+    if (role === 'teacher') { tag = App.canTeach() ? 'Εκπαιδευτικός' : 'Βοηθητικός εκπαιδευτικός'; }
     el('whoami').textContent = st.profile.full_name + ' · ' + tag;
     el('topbar').hidden = false;
   };
@@ -112,12 +114,13 @@
     if (status === 'approved') {
       banner = '<p><span class="badge approved">Εγκεκριμένος</span> Μπορείς να προσθέτεις μαθητές, να δέχεσαι αιτήματα και να προσκαλείς συνεργάτες.</p>';
     } else if (status === 'pending') {
-      banner = '<p><span class="badge pending">Υπό έλεγχο</span> Ο διαχειριστής ελέγχει την αίτησή σου. Δεν μπορείς να αλλάξεις τα πιστοποιητικά όσο διαρκεί ο έλεγχος.</p>';
+      banner = '<p><span class="badge pending">Υπό έλεγχο</span> Στο μεταξύ είσαι βοηθητικός εκπαιδευτικός. Ο διαχειριστής ελέγχει την αίτησή σου. Δεν μπορείς να αλλάξεις τα πιστοποιητικά όσο διαρκεί ο έλεγχος.</p>';
     } else if (status === 'rejected') {
       banner = '<p><span class="badge rejected">Απορρίφθηκε</span> ' + esc(a.review_note || '') + '</p>' +
         '<p class="muted">Μπορείς να διορθώσεις τα στοιχεία, να προσθέσεις πιστοποιητικά και να υποβάλεις ξανά.</p>';
     } else {
-      banner = '<p>Για να διδάξεις στην πλατφόρμα χρειάζεται έγκριση. Συμπλήρωσε τα στοιχεία σου, ανέβασε τα πιστοποιητικά σου (πτυχίο, μεταπτυχιακά κ.λπ.) και υπέβαλε την αίτηση.</p>';
+      banner = '<p><span class="badge draft">Βοηθητικός</span> Μέχρι να εγκριθείς μπορείς να συνεργάζεσαι με εκπαιδευτικούς και να βοηθάς τους μαθητές τους ως βοηθός. Δεν μπορείς να έχεις δικούς σου μαθητές.</p>' +
+        '<p>Για να διδάξεις αυτόνομα χρειάζεται έγκριση. Συμπλήρωσε τα στοιχεία σου, ανέβασε τα πιστοποιητικά σου (πτυχίο, μεταπτυχιακά κ.λπ.) και υπέβαλε την αίτηση.</p>';
     }
 
     view.innerHTML =
@@ -278,22 +281,31 @@
   App.pages.users = async function () {
     App.renderNav('users');
     if (!App.isAdmin()) { location.hash = '#/'; return; }
-    var users = await must(sb.from('profiles').select('id, email, full_name, role, created_at').order('created_at', { ascending: false }));
+    var users = await must(sb.from('profiles').select('id, email, full_name, role, can_request, created_at').order('created_at', { ascending: false }));
     var apps = await must(sb.from('teacher_applications').select('user_id, status'));
     var appBy = {};
     apps.forEach(function (a) { appBy[a.user_id] = a.status; });
     view.innerHTML =
       '<h1>Χρήστες</h1><div class="card">' +
-      '<p class="muted">Οι νέοι χρήστες διαλέγουν μόνοι τους «Εκπαιδευτικός» ή «Μαθητής / γονέας». Ο ρόλος «Διαχειριστής» δίνεται μόνο από εδώ. Η έγκριση εκπαιδευτών γίνεται από τη σελίδα Εγκρίσεις.</p>' +
-      '<table><thead><tr><th>Όνομα</th><th>Email</th><th>Ρόλος</th><th>Έγκριση</th></tr></thead><tbody>' +
+      '<p class="muted">Οι νέοι χρήστες διαλέγουν «Εκπαιδευτικός», «Γονέας ή ενήλικος μαθητής» ή «Μαθητής (ανήλικος)». Μόνο οι δύο πρώτοι στέλνουν αιτήματα συνεργασίας· το δικαίωμα το αλλάζεις εδώ. Ο ρόλος «Διαχειριστής» δίνεται μόνο από εδώ. Η έγκριση εκπαιδευτών γίνεται από τη σελίδα Εγκρίσεις.</p>' +
+      '<table><thead><tr><th>Όνομα</th><th>Email</th><th>Ρόλος</th><th>Έγκριση / αιτήματα</th></tr></thead><tbody>' +
       users.map(function (u) {
         return '<tr><td>' + esc(u.full_name) + '</td><td>' + esc(u.email) + '</td><td>' +
           '<select data-change="user-role" data-id="' + esc(u.id) + '"' + (u.id === App.state.profile.id ? ' disabled' : '') + '>' +
           Object.keys(App.ROLE_LABEL).map(function (k) {
             return '<option value="' + k + '"' + (k === u.role ? ' selected' : '') + '>' + esc(App.ROLE_LABEL[k]) + '</option>';
           }).join('') + '</select></td>' +
-          '<td>' + (u.role === 'teacher' ? esc(App.APP_STATUS[appBy[u.id] || 'draft']) : '<span class="muted">—</span>') + '</td></tr>';
+          '<td>' + (u.role === 'teacher' ? esc(App.APP_STATUS[appBy[u.id] || 'draft'])
+            : u.role === 'student'
+              ? '<label class="check"><input type="checkbox" data-change="user-can-request" data-id="' + esc(u.id) + '"' + (u.can_request ? ' checked' : '') + '> Στέλνει αιτήματα</label>'
+              : '<span class="muted">—</span>') + '</td></tr>';
       }).join('') + '</tbody></table></div>';
+  };
+
+  App.changes['user-can-request'] = async function (t) {
+    var rows = await must(sb.from('profiles').update({ can_request: t.checked }).eq('id', t.getAttribute('data-id')).select('id'));
+    if (!rows.length) { throw new Error('Η αλλαγή δεν εφαρμόστηκε.'); }
+    App.toast('Το δικαίωμα αιτημάτων άλλαξε.');
   };
 
   App.changes['user-role'] = async function (t) {

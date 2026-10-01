@@ -98,6 +98,10 @@
     certificate: 'Πιστοποιητικό',
     other: 'Άλλο'
   };
+  App.MEETING_KIND = {
+    intro: 'Γνωριμία',
+    parent: 'Συνάντηση γονέα'
+  };
   App.REQ_STATUS = {
     pending: 'Εκκρεμεί',
     accepted: 'Έγινε αποδεκτό',
@@ -156,6 +160,10 @@
     if (!st.profile) { return false; }
     if (st.profile.role === 'admin') { return true; }
     return st.profile.role === 'teacher' && !!st.application && st.application.status === 'approved';
+  };
+  // Μπορεί να στείλει αίτημα συνεργασίας σε εκπαιδευτικό (γονέας ή ενήλικος μαθητής).
+  App.canRequest = function () {
+    return !!App.state.profile && App.state.profile.role === 'student' && !!App.state.profile.can_request;
   };
   // Μπορεί να αλλάξει αυτό που ανήκει σε αυτόν τον εκπαιδευτικό; Ο βοηθός βλέπει, δεν αλλάζει.
   App.ownsTeacher = function (teacherId) {

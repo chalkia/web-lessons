@@ -31,7 +31,7 @@ begin
   -- Ρόλοι και ονόματα
   update public.profiles set role = 'teacher', full_name = 'Δοκιμαστικός Εκπαιδευτικός 1' where id = t1;
   update public.profiles set role = 'teacher', full_name = 'Δοκιμαστικός Εκπαιδευτικός 2' where id = t2;
-  update public.profiles set role = 'student', full_name = 'Δοκιμαστικός Γονέας' where id = par;
+  update public.profiles set role = 'student', can_request = true, full_name = 'Δοκιμαστικός Γονέας' where id = par;
   update public.profiles set role = 'student', full_name = 'Δοκιμαστικός Μαθητής' where id = stu;
 
   -- Εγκεκριμένοι εκπαιδευτικοί (ο διαχειριστής είναι ο δικός σου λογαριασμός, δεν χρειάζεται εδώ)

@@ -14,7 +14,8 @@
 
   App.pages.students = async function () {
     App.renderNav('students');
-    if (!App.canTeach()) { denyTeaching(); return; }
+    if (!App.canTeach() && !App.isTeacher()) { denyTeaching(); return; }
+    var write = App.canTeach();
     var all = await must(sb.from('students').select('id, full_name, grade, teacher_id').order('full_name'));
     // Οι δικοί μου μαθητές (ο διαχειριστής τους βλέπει όλους) και, χωριστά, όσοι βοηθάω.
     var mine = all.filter(function (s) { return App.ownsTeacher(s.teacher_id); });
@@ -26,6 +27,12 @@
           return '<tr><td>' + esc(s.full_name) + '</td><td>' + esc(s.grade) + '</td></tr>';
         }).join('') + '</tbody></table></div>'
       : '';
+    if (!write) {
+      view.innerHTML = '<h1>Μαθητές</h1>' +
+        '<div class="card"><p>Είσαι βοηθητικός εκπαιδευτικός: δεν έχεις δικούς σου μαθητές μέχρι να εγκριθείς. Για έγκριση πήγαινε στα <a href="#/credentials">Πιστοποιητικά</a>.</p></div>' +
+        (assisted.length ? assistedHtml : '<div class="card"><p class="empty">Δεν βοηθάς ακόμη κάποιον μαθητή. Συνεργάσου με έναν εκπαιδευτικό από τη σελίδα Συνεργάτες και όρισέ σε βοηθό.</p></div>');
+      return;
+    }
     view.innerHTML =
       '<h1>Μαθητές</h1>' +
       '<div class="card"><h2>Νέος μαθητής</h2>' +
@@ -195,7 +202,8 @@
   // ---------- Κατάλογος εκπαιδευτικών / συνεργασίες ----------
 
   function teacherCard(d, extra) {
-    return '<div class="card"><h2>' + esc(d.full_name) + '</h2>' +
+    return '<div class="card"><h2>' + esc(d.full_name) +
+      (d.approved ? '' : ' <span class="badge draft">Βοηθητικός</span>') + '</h2>' +
       (d.subjects ? '<p><strong>' + esc(d.subjects) + '</strong></p>' : '') +
       (d.bio ? '<p class="muted">' + esc(d.bio) + '</p>' : '') + extra + '</div>';
   }
@@ -204,7 +212,10 @@
     var role = App.state.profile.role;
     App.renderNav('teachers');
     if (role === 'admin') { location.hash = '#/'; return; }
-    if (role === 'teacher' && !App.canTeach()) { denyTeaching(); return; }
+    if (role === 'student' && !App.canRequest()) {
+      view.innerHTML = '<h1>Εκπαιδευτικοί</h1><div class="card"><p>Το αίτημα συνεργασίας σε εκπαιδευτικό το στέλνει ο γονέας ή ο ενήλικος μαθητής. Ζήτησε από τον γονέα σου να κάνει είσοδο.</p></div>';
+      return;
+    }
     var dir = await must(sb.rpc('teacher_directory'));
 
     if (role === 'teacher') {
@@ -214,7 +225,9 @@
       var others = dir.filter(function (d) { return !d.collab_status; });
       view.innerHTML =
         '<h1>Συνεργάτες</h1>' +
-        '<p class="muted">Εδώ βλέπεις τους άλλους εγκεκριμένους εκπαιδευτικούς. Όποιον αποδεχτεί πρόσκληση συνεργασίας μπορείς να τον ορίσεις βοηθό στους μαθητές σου.</p>' +
+        (App.canTeach()
+          ? '<p class="muted">Εδώ βλέπεις τους άλλους εκπαιδευτικούς, και τους βοηθητικούς που δεν έχουν ακόμη έγκριση. Όποιον αποδεχτεί πρόσκληση συνεργασίας μπορείς να τον ορίσεις βοηθό στους μαθητές σου.</p>'
+          : '<p class="muted">Είσαι βοηθητικός εκπαιδευτικός. Στείλε πρόσκληση σε εγκεκριμένο εκπαιδευτικό. Αν την αποδεχτεί, μπορεί να σε ορίσει βοηθό στους μαθητές του.</p>') +
         (incoming.length ? '<h2>Προσκλήσεις προς εσένα</h2>' + incoming.map(function (d) {
           return teacherCard(d, '<p><button class="primary" data-action="collab-accept" data-id="' + esc(d.collab_id) + '">Αποδοχή</button> ' +
             '<button class="danger" data-action="collab-decline" data-id="' + esc(d.collab_id) + '">Απόρριψη</button></p>');
@@ -226,7 +239,7 @@
         (outgoing.length ? '<h2>Προσκλήσεις που έστειλα</h2>' + outgoing.map(function (d) {
           return teacherCard(d, '<p><span class="badge pending">Σε αναμονή</span> <button class="danger" data-action="collab-remove" data-id="' + esc(d.collab_id) + '">Ακύρωση</button></p>');
         }).join('') : '') +
-        '<h2>Άλλοι εκπαιδευτικοί</h2>' +
+        '<h2>' + (App.canTeach() ? 'Άλλοι εκπαιδευτικοί' : 'Εγκεκριμένοι εκπαιδευτικοί') + '</h2>' +
         (others.length ? others.map(function (d) {
           return teacherCard(d, '<p><button class="primary" data-action="collab-request" data-id="' + esc(d.id) + '">Πρόσκληση συνεργασίας</button></p>');
         }).join('') : '<div class="card"><p class="empty">Δεν υπάρχουν άλλοι εκπαιδευτικοί.</p></div>');
@@ -242,7 +255,7 @@
 
     view.innerHTML =
       '<h1>Εκπαιδευτικοί</h1>' +
-      '<p class="muted">Διάλεξε εκπαιδευτικό και στείλε αίτημα. Αν το αποδεχτεί, το παιδί προστίθεται στους μαθητές του και βλέπεις τα μαθήματά του στο ημερολόγιο.</p>' +
+      '<p class="muted">Διάλεξε εκπαιδευτικό και στείλε αίτημα. Αν το αποδεχτεί, το παιδί προστίθεται στους μαθητές του και μπορείτε να κλείσετε ραντεβού γνωριμίας στο ημερολόγιο.</p>' +
       (reqs.length
         ? '<div class="card"><h2>Τα αιτήματά μου</h2><table><tbody>' + reqs.map(function (r) {
           return '<tr><td>' + esc(nameBy[r.teacher_id] || 'Εκπαιδευτικός') + '</td><td>' + esc(r.child_name) + '</td>' +
@@ -305,6 +318,8 @@
     profs.forEach(function (p) { by[p.id] = p; });
     var pending = reqs.filter(function (r) { return r.status === 'pending'; });
     var done = reqs.filter(function (r) { return r.status !== 'pending'; });
+    var accepted = reqs.filter(function (r) { return r.status === 'accepted'; });
+    var start = App.toLocalInput(App.nextHour());
 
     function who(r) {
       var p = by[r.parent_id];
@@ -322,11 +337,37 @@
           '<p><button class="primary" data-action="interest-accept" data-id="' + esc(r.id) + '">Αποδοχή</button> ' +
           '<button class="danger" data-action="interest-decline" data-id="' + esc(r.id) + '">Απόρριψη</button></p></div>';
       }).join('') : '<div class="card"><p class="empty">Κανένα αίτημα σε αναμονή.</p></div>') +
+      (accepted.length ? '<h2>Ραντεβού γνωριμίας</h2>' +
+        '<p class="muted">Αφού αποδεχτείς ένα αίτημα, κλείσε ραντεβού για να γνωριστείτε. Θα το δουν στο ημερολόγιό τους και θα μπουν με το κουμπί «Σύνδεση» στο δωμάτιό σου.</p>' +
+        accepted.map(function (r) {
+          return '<div class="card"><h2>' + esc(r.child_name) + '</h2><p>Γονέας: ' + who(r) + '</p>' +
+            '<form data-form="add-intro" data-guest="' + esc(r.parent_id) + '" class="row">' +
+            '<label class="field">Έναρξη<input name="start" type="datetime-local" value="' + esc(start) + '" required></label>' +
+            '<label class="field">Διάρκεια (λεπτά)<input name="duration" type="number" min="15" max="240" step="15" value="30" required></label>' +
+            '<label class="field">Σημείωση<input name="notes" maxlength="500"></label>' +
+            '<button class="primary" type="submit">Κλείσε ραντεβού γνωριμίας</button></form></div>';
+        }).join('') : '') +
       (done.length ? '<h2>Παλαιότερα</h2><div class="card"><table><tbody>' + done.map(function (r) {
         return '<tr><td>' + esc(r.child_name) + '</td><td>' + who(r) + '</td><td>' + esc(fmt(r.created_at)) + '</td>' +
           '<td><span class="badge ' + esc(r.status) + '">' + esc(App.REQ_STATUS[r.status]) + '</span>' +
           (r.student_id ? ' <a href="#/student/' + esc(r.student_id) + '">Άνοιγμα</a>' : '') + '</td></tr>';
       }).join('') + '</tbody></table></div>' : '');
+  };
+
+  App.forms['add-intro'] = async function (f) {
+    var startD = new Date(f.elements['start'].value);
+    if (isNaN(startD.getTime())) { throw new Error('Άκυρη ημερομηνία έναρξης.'); }
+    var endD = new Date(startD.getTime() + Number(f.elements['duration'].value) * 60000);
+    await must(sb.rpc('create_meeting', {
+      p_guest: f.getAttribute('data-guest'),
+      p_kind: 'intro',
+      p_student: null,
+      p_start: startD.toISOString(),
+      p_end: endD.toISOString(),
+      p_url: '',
+      p_notes: f.elements['notes'].value.trim()
+    }));
+    App.toast('Το ραντεβού γνωριμίας προγραμματίστηκε. Φαίνεται στο ημερολόγιο.');
   };
 
   App.actions['interest-accept'] = async function (t) {

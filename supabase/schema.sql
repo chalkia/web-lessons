@@ -23,6 +23,10 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
+-- Ποιος μπορεί να στέλνει αίτημα συνεργασίας σε εκπαιδευτικό: γονείς και ενήλικοι μαθητές.
+-- Οι ανήλικοι μαθητές δεν μπορούν (το ορίζει η επιλογή στην εγγραφή ή ο διαχειριστής).
+alter table public.profiles add column if not exists can_request boolean not null default false;
+
 create table if not exists public.students (
   id uuid primary key default gen_random_uuid(),
   teacher_id uuid not null references public.profiles(id) on delete cascade,
@@ -113,6 +117,24 @@ create table if not exists public.interest_requests (
   created_at timestamptz not null default now(),
   responded_at timestamptz
 );
+
+-- Ραντεβού εκπαιδευτικού με γονέα (ή ενήλικο μαθητή): γνωριμία μετά από αποδεκτό αίτημα, ή συνάντηση γονέων.
+create table if not exists public.meetings (
+  id uuid primary key default gen_random_uuid(),
+  teacher_id uuid not null references public.profiles(id) on delete cascade,
+  guest_id uuid not null references public.profiles(id) on delete cascade,
+  kind text not null check (kind in ('intro','parent')),
+  student_id uuid references public.students(id) on delete set null,
+  starts_at timestamptz not null,
+  ends_at timestamptz not null,
+  meeting_url text,
+  status text not null default 'planned' check (status in ('planned','done','cancelled')),
+  notes text,
+  created_at timestamptz not null default now(),
+  check (ends_at > starts_at)
+);
+create index if not exists meetings_teacher_idx on public.meetings(teacher_id, starts_at);
+create index if not exists meetings_guest_idx on public.meetings(guest_id, starts_at);
 
 -- Μάθημα (μπορεί να έχει πολλούς μαθητές). Η κατάσταση/παρουσία είναι ανά μαθητή.
 create table if not exists public.lessons (
@@ -247,7 +269,8 @@ language sql stable security definer set search_path = public as $$
     p.id = auth.uid() or public.is_admin() or public.can_see_profile(p.id)
     or exists (select 1 from public.students s where s.teacher_id = p.id and public.can_see_student(s.id))
     or exists (select 1 from public.student_assistants sa
-               where sa.assistant_id = p.id and public.can_see_student(sa.student_id)))
+               where sa.assistant_id = p.id and public.can_see_student(sa.student_id))
+    or exists (select 1 from public.meetings m where m.teacher_id = p.id and m.guest_id = auth.uid()))
 $$;
 
 -- Δωμάτια (σύνδεσμοι) των εκπαιδευτικών/βοηθών που σχετίζονται με μαθητές που βλέπω. Ίδια ορατότητα με το names_for.
@@ -261,23 +284,32 @@ language sql stable security definer set search_path = public as $$
     p.id = auth.uid() or public.is_admin() or public.can_see_profile(p.id)
     or exists (select 1 from public.students s where s.teacher_id = p.id and public.can_see_student(s.id))
     or exists (select 1 from public.student_assistants sa
-               where sa.assistant_id = p.id and public.can_see_student(sa.student_id)))
+               where sa.assistant_id = p.id and public.can_see_student(sa.student_id))
+    or exists (select 1 from public.meetings m where m.teacher_id = p.id and m.guest_id = auth.uid()))
 $$;
 
--- Κατάλογος εγκεκριμένων εκπαιδευτικών (χωρίς email), με την κατάσταση συνεργασίας με τον τρέχοντα.
+-- Κατάλογος εκπαιδευτικών (χωρίς email), με την κατάσταση συνεργασίας με τον τρέχοντα.
+-- Γονείς και μαθητές βλέπουν μόνο τους εγκεκριμένους. Οι εγκεκριμένοι εκπαιδευτικοί και ο διαχειριστής
+-- βλέπουν και τους βοηθητικούς (χωρίς έγκριση), ώστε να τους προσκαλούν ως βοηθούς.
+drop function if exists public.teacher_directory();
 create or replace function public.teacher_directory()
-returns table (id uuid, full_name text, subjects text, bio text,
+returns table (id uuid, full_name text, approved boolean, subjects text, bio text,
                collab_id uuid, collab_status text, collab_direction text)
 language sql stable security definer set search_path = public as $$
-  select p.id, p.full_name, a.subjects, a.bio, c.id, c.status,
+  select p.id, p.full_name, coalesce(a.status = 'approved', false),
+         case when a.status = 'approved' then a.subjects end,
+         case when a.status = 'approved' then a.bio end,
+         c.id, c.status,
          case when c.from_teacher = auth.uid() then 'out'
               when c.to_teacher = auth.uid() then 'in' else null end
-  from public.teacher_applications a
-  join public.profiles p on p.id = a.user_id
+  from public.profiles p
+  left join public.teacher_applications a on a.user_id = p.id
   left join public.teacher_collabs c
     on (c.from_teacher = auth.uid() and c.to_teacher = p.id)
     or (c.to_teacher = auth.uid() and c.from_teacher = p.id)
-  where auth.uid() is not null and a.status = 'approved' and p.role = 'teacher' and p.id <> auth.uid()
+  where auth.uid() is not null and p.role = 'teacher' and p.id <> auth.uid()
+    and (coalesce(a.status = 'approved', false)
+         or public.is_admin() or public.is_approved_teacher(auth.uid()))
   order by p.full_name
 $$;
 
@@ -287,16 +319,21 @@ create or replace function public.handle_new_user() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare
   chosen text := coalesce(new.raw_user_meta_data->>'account_type', 'student');
+  can_req boolean := false;
 begin
-  -- Επιτρέπονται μόνο teacher ή student. Ο admin ορίζεται ΜΟΝΟ από τη βάση.
-  if chosen not in ('teacher','student') then
+  -- Επιλογές εγγραφής: teacher (βοηθητικός μέχρι να εγκριθεί), family (γονέας ή ενήλικος μαθητής),
+  -- student (ανήλικος μαθητής). Ο admin ορίζεται ΜΟΝΟ από τη βάση.
+  if chosen = 'family' then
+    chosen := 'student';
+    can_req := true;
+  elsif chosen not in ('teacher','student') then
     chosen := 'student';
   end if;
 
-  insert into public.profiles (id, email, full_name, role)
+  insert into public.profiles (id, email, full_name, role, can_request)
   values (new.id, new.email,
           coalesce(new.raw_user_meta_data->>'full_name', new.email),
-          chosen);
+          chosen, can_req);
 
   insert into public.student_parents (student_id, parent_id)
     select student_id, new.id from public.invites
@@ -336,6 +373,9 @@ begin
     -- να δηλώσει ξένο email και να συνδεθεί σε ξένο μαθητή.
     if new.email is distinct from old.email then
       raise exception 'Το email δεν αλλάζει από εδώ';
+    end if;
+    if new.can_request is distinct from old.can_request then
+      raise exception 'Μόνο ο διαχειριστής αλλάζει το δικαίωμα αιτημάτων';
     end if;
   end if;
   return new;
@@ -424,8 +464,10 @@ begin
   if not (public.is_admin() or (owner_id = auth.uid() and public.my_teacher_ok())) then
     raise exception 'Δεν έχεις δικαίωμα σε αυτόν τον μαθητή';
   end if;
-  if p_assistant = owner_id or not public.is_approved_teacher(p_assistant) then
-    raise exception 'Ο βοηθός πρέπει να είναι άλλος εγκεκριμένος εκπαιδευτικός';
+  -- Βοηθός μπορεί να είναι κάθε εκπαιδευτικός με αποδεκτή συνεργασία, ακόμη και χωρίς έγκριση διδασκαλίας.
+  if p_assistant = owner_id
+     or not exists (select 1 from public.profiles where id = p_assistant and role = 'teacher') then
+    raise exception 'Ο βοηθός πρέπει να είναι άλλος εκπαιδευτικός';
   end if;
   if not exists (
     select 1 from public.teacher_collabs c
@@ -526,11 +568,16 @@ create or replace function public.request_collab(p_target uuid)
 returns text
 language plpgsql security definer set search_path = public as $$
 begin
-  if not public.is_approved_teacher(auth.uid()) then
-    raise exception 'Χρειάζεται εγκεκριμένος εκπαιδευτικός';
+  if public.my_role() is distinct from 'teacher' then
+    raise exception 'Μόνο εκπαιδευτικοί στέλνουν πρόσκληση συνεργασίας';
   end if;
-  if p_target = auth.uid() or not public.is_approved_teacher(p_target) then
+  if p_target = auth.uid()
+     or not exists (select 1 from public.profiles where id = p_target and role = 'teacher') then
     raise exception 'Άκυρος εκπαιδευτικός';
+  end if;
+  -- Ο βοηθητικός (χωρίς έγκριση) συνεργάζεται μόνο με εγκεκριμένο, όχι με άλλον βοηθητικό.
+  if not (public.is_approved_teacher(auth.uid()) or public.is_approved_teacher(p_target)) then
+    raise exception 'Η συνεργασία χρειάζεται τουλάχιστον έναν εγκεκριμένο εκπαιδευτικό';
   end if;
   if exists (select 1 from public.teacher_collabs c
              where (c.from_teacher = auth.uid() and c.to_teacher = p_target)
@@ -584,6 +631,9 @@ declare
 begin
   if public.my_role() is distinct from 'student' then
     raise exception 'Το αίτημα στέλνεται από λογαριασμό μαθητή ή γονέα';
+  end if;
+  if not coalesce((select can_request from public.profiles where id = auth.uid()), false) then
+    raise exception 'Το αίτημα στέλνεται από γονέα ή ενήλικο μαθητή';
   end if;
   if not public.is_approved_teacher(p_teacher) then
     raise exception 'Ο εκπαιδευτικός δεν είναι διαθέσιμος';
@@ -725,7 +775,77 @@ begin
   return sid;
 end $$;
 
+-- Ραντεβού με γονέα. 'intro' = γνωριμία μετά από ΑΠΟΔΕΚΤΟ αίτημα. 'parent' = συνάντηση για έναν δικό του μαθητή.
+create or replace function public.create_meeting(
+  p_guest uuid, p_kind text, p_student uuid, p_start timestamptz, p_end timestamptz,
+  p_url text, p_notes text)
+returns uuid
+language plpgsql security definer set search_path = public as $$
+declare
+  mid uuid;
+  sid uuid := null;
+begin
+  if not public.my_teacher_ok() then
+    raise exception 'Χρειάζεται εγκεκριμένος εκπαιδευτικός';
+  end if;
+  if p_kind not in ('intro','parent') then
+    raise exception 'Άκυρο είδος ραντεβού';
+  end if;
+  if p_end <= p_start or p_end - p_start > interval '4 hours' then
+    raise exception 'Άκυρη διάρκεια';
+  end if;
+  if coalesce(p_url,'') <> '' and (p_url !~* '^https?://' or length(p_url) > 500) then
+    raise exception 'Ο σύνδεσμος πρέπει να αρχίζει με http:// ή https://';
+  end if;
+  if length(coalesce(p_notes,'')) > 500 then
+    raise exception 'Πολύ μεγάλες σημειώσεις';
+  end if;
+  if p_kind = 'intro' then
+    if not exists (select 1 from public.interest_requests r
+                   where r.teacher_id = auth.uid() and r.parent_id = p_guest and r.status = 'accepted') then
+      raise exception 'Ραντεβού γνωριμίας γίνεται μόνο μετά από αποδεκτό αίτημα';
+    end if;
+  else
+    if p_student is null then
+      raise exception 'Διάλεξε μαθητή';
+    end if;
+    if not exists (select 1 from public.students s
+                   where s.id = p_student and s.teacher_id = auth.uid()
+                     and (s.user_id = p_guest
+                          or exists (select 1 from public.student_parents sp
+                                     where sp.student_id = s.id and sp.parent_id = p_guest))) then
+      raise exception 'Ο καλεσμένος δεν είναι γονέας ή μαθητής δικός σου μαθητή';
+    end if;
+    sid := p_student;
+  end if;
+  insert into public.meetings (teacher_id, guest_id, kind, student_id, starts_at, ends_at, meeting_url, notes)
+    values (auth.uid(), p_guest, p_kind, sid, p_start, p_end, nullif(p_url,''), nullif(p_notes,''))
+    returning id into mid;
+  return mid;
+end $$;
+
+-- Στα ραντεβού αλλάζουν μόνο ώρα, σύνδεσμος, κατάσταση, σημείωση. Όχι ο καλεσμένος, ο εκπαιδευτικός, το είδος.
+create or replace function public.guard_meeting_update() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is not null then
+    if new.teacher_id is distinct from old.teacher_id or new.guest_id is distinct from old.guest_id
+       or new.kind is distinct from old.kind or new.student_id is distinct from old.student_id then
+      raise exception 'Ο καλεσμένος, το είδος και ο μαθητής δεν αλλάζουν';
+    end if;
+    if coalesce(new.meeting_url,'') <> '' and (new.meeting_url !~* '^https?://' or length(new.meeting_url) > 500) then
+      raise exception 'Ο σύνδεσμος πρέπει να αρχίζει με http:// ή https://';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists guard_meeting_trg on public.meetings;
+create trigger guard_meeting_trg before update on public.meetings
+  for each row execute function public.guard_meeting_update();
+
 -- Δικαιώματα εκτέλεσης: μόνο συνδεδεμένοι χρήστες (όχι ανώνυμοι).
+revoke execute on function public.create_meeting(uuid, text, uuid, timestamptz, timestamptz, text, text) from public;
+grant execute on function public.create_meeting(uuid, text, uuid, timestamptz, timestamptz, text, text) to authenticated;
 revoke execute on function public.add_access(uuid, text, text) from public;
 revoke execute on function public.add_assistant(uuid, uuid) from public;
 revoke execute on function public.save_application(text, text) from public;
@@ -776,6 +896,7 @@ alter table public.lesson_students         enable row level security;
 alter table public.support_sessions        enable row level security;
 alter table public.support_session_students enable row level security;
 alter table public.personal_events         enable row level security;
+alter table public.meetings                enable row level security;
 
 -- profiles
 drop policy if exists profiles_select on public.profiles;
@@ -905,6 +1026,18 @@ create policy sss_select on public.support_session_students for select
   using (public.can_see_student(student_id));
 
 -- personal_events: μόνο ο ιδιοκτήτης
+-- meetings: ανάγνωση από εκπαιδευτικό και καλεσμένο· αλλαγές μόνο από τον εκπαιδευτικό (ή διαχειριστή). Η δημιουργία γίνεται από rpc.
+drop policy if exists mt_select on public.meetings;
+create policy mt_select on public.meetings for select
+  using (public.is_admin() or teacher_id = auth.uid() or guest_id = auth.uid());
+drop policy if exists mt_update on public.meetings;
+create policy mt_update on public.meetings for update
+  using (public.is_admin() or (teacher_id = auth.uid() and public.my_teacher_ok()))
+  with check (public.is_admin() or (teacher_id = auth.uid() and public.my_teacher_ok()));
+drop policy if exists mt_delete on public.meetings;
+create policy mt_delete on public.meetings for delete
+  using (public.is_admin() or (teacher_id = auth.uid() and public.my_teacher_ok()));
+
 drop policy if exists pe_all on public.personal_events;
 create policy pe_all on public.personal_events for all
   using (user_id = auth.uid()) with check (user_id = auth.uid());

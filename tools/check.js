@@ -63,6 +63,13 @@ while ((tm = tRe.exec(schema))) {
   tables[tm[1]] = cols;
 }
 
+// Στήλες που προστίθενται αργότερα με: alter table public.X add column if not exists col type
+const aRe = /alter table public\.(\w+)\s+add column if not exists (\w+)/g;
+let am;
+while ((am = aRe.exec(schema))) {
+  if (tables[am[1]]) { tables[am[1]].add(am[2]); }
+}
+
 function topLevel(list) {
   const out = []; let depth = 0; let cur = '';
   for (const ch of list) {

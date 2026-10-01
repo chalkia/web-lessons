@@ -12,7 +12,7 @@ declare
   t2 uuid:='00000000-0000-0000-0000-0000000000b2'; t3 uuid:='00000000-0000-0000-0000-0000000000b3';
   un uuid:='00000000-0000-0000-0000-0000000000b4'; p1 uuid:='00000000-0000-0000-0000-0000000000c1';
   p2 uuid:='00000000-0000-0000-0000-0000000000c2'; p3 uuid:='00000000-0000-0000-0000-0000000000c3';
-  s1 uuid; s2 uuid; s3 uuid; lid uuid; sess uuid; rid uuid; cid uuid; n bigint;
+  s1 uuid; s2 uuid; s3 uuid; mid uuid; lid uuid; sess uuid; rid uuid; cid uuid; n bigint;
 begin
   perform t.as_super();
   insert into auth.users(id,email,raw_user_meta_data) values
@@ -21,7 +21,7 @@ begin
    (t2,'t2@x.gr','{"full_name":"Teacher Two","account_type":"teacher"}'),
    (t3,'t3@x.gr','{"full_name":"Teacher Three","account_type":"teacher"}'),
    (un,'un@x.gr','{"full_name":"Unapproved","account_type":"teacher"}'),
-   (p1,'p1@x.gr','{"full_name":"Parent One"}'),(p2,'p2@x.gr','{"full_name":"Parent Two"}'),
+   (p1,'p1@x.gr','{"full_name":"Parent One"}'),(p2,'p2@x.gr','{"full_name":"Parent Two","account_type":"family"}'),
    (p3,'p3@x.gr','{"full_name":"Parent Three","account_type":"admin"}');
   update profiles set role='admin' where id=adm;
   perform t.ok('εγγραφή ως admin από τη σελίδα αγνοείται', (select role from profiles where id=p3)='student');
@@ -167,6 +167,79 @@ begin
   select id into cid from teacher_collabs limit 1;
   perform remove_collab(cid);
   perform t.ok('λήξη συνεργασίας αφαιρεί τον βοηθό', t.n('select count(*) from student_assistants')=0);
+
+  -- Αιτήματα: μόνο γονείς και ενήλικοι μαθητές (can_request)
+  perform t.as_user(p1);
+  perform t.fails('ανήλικος μαθητής δεν στέλνει αίτημα', format($q$select send_interest(%L,'Ξ',null,null)$q$, t2));
+  perform t.fails('ο χρήστης δεν δίνει στον εαυτό του δικαίωμα αιτημάτων', format($q$update profiles set can_request=true where id=%L$q$, p1));
+  perform t.as_super();
+  perform t.ok('η επιλογή family δίνει can_request', (select can_request from profiles where id=p2));
+  perform t.ok('η επιλογή student δεν δίνει can_request', not (select can_request from profiles where id=p1));
+  perform t.as_user(adm);
+  update profiles set can_request=true where id=p1;
+  perform t.as_super(); perform t.ok('ο διαχειριστής δίνει can_request', (select can_request from profiles where id=p1));
+  update profiles set can_request=false where id=p1;
+
+  -- Ραντεβού γνωριμίας και συναντήσεις γονέων
+  perform t.as_user(t1);
+  mid := create_meeting(p2,'intro',null, now()+interval '1 day', now()+interval '1 day 30 minutes', null, 'Γνωριμία');
+  perform t.ok('γνωριμία μετά από αποδεκτό αίτημα', mid is not null);
+  perform t.fails('γνωριμία χωρίς αίτημα', format($q$select create_meeting(%L,'intro',null, now()+interval '1 day', now()+interval '1 day 1 hour', null, null)$q$, p1));
+  perform t.fails('γνωριμία με άκυρη διάρκεια', format($q$select create_meeting(%L,'intro',null, now()+interval '1 day', now()+interval '2 days', null, null)$q$, p2));
+  perform t.fails('ραντεβού με javascript:', format($q$select create_meeting(%L,'intro',null, now()+interval '1 day', now()+interval '1 day 1 hour', 'javascript:alert(1)', null)$q$, p2));
+  perform t.as_user(t2);
+  perform t.fails('γνωριμία από άλλον εκπαιδευτικό χωρίς αίτημα', format($q$select create_meeting(%L,'intro',null, now()+interval '1 day', now()+interval '1 day 1 hour', null, null)$q$, p2));
+  perform t.ok('άλλος εκπαιδευτικός δεν βλέπει το ραντεβού', t.n('select count(*) from meetings')=0);
+  perform t.as_user(t1);
+  perform create_meeting(p1,'parent',s1, now()+interval '2 days', now()+interval '2 days 1 hour', 'https://meet.example/g', 'Πρόοδος');
+  perform t.fails('συνάντηση με γονέα άσχετου μαθητή', format($q$select create_meeting(%L,'parent',%L, now()+interval '2 days', now()+interval '2 days 1 hour', null, null)$q$, p2, s1));
+  perform t.fails('συνάντηση γονέα χωρίς μαθητή', format($q$select create_meeting(%L,'parent',null, now()+interval '2 days', now()+interval '2 days 1 hour', null, null)$q$, p1));
+  perform t.fails('άμεσο insert ραντεβού', format($q$insert into meetings(teacher_id,guest_id,kind,starts_at,ends_at) values (%L,%L,'intro',now(),now()+interval '1 hour')$q$, t1, p3));
+  perform t.ok('ο εκπαιδευτικός βλέπει 2 ραντεβού', t.n('select count(*) from meetings')=2);
+  perform t.fails('δεν αλλάζει ο καλεσμένος', format($q$update meetings set guest_id=%L where id=%L$q$, p3, mid));
+  update meetings set status='done' where id=mid;
+  perform t.ok('ο εκπαιδευτικός αλλάζει κατάσταση', (select status from meetings where id=mid)='done');
+  perform t.as_user(p2);
+  perform t.ok('ο γονέας βλέπει μόνο το δικό του ραντεβού', t.n('select count(*) from meetings')=1);
+  perform t.ok('ο γονέας βλέπει το όνομα και το δωμάτιο του εκπαιδευτικού', t.n(format($q$select count(*) from names_for(array[%L]::uuid[])$q$, t1))=1);
+  update meetings set status='cancelled' where id=mid;
+  perform t.as_super(); perform t.ok('ο γονέας δεν αλλάζει ραντεβού', (select status from meetings where id=mid)='done'); perform t.as_user(p2);
+  delete from meetings where id=mid;
+  perform t.as_super(); perform t.ok('ο γονέας δεν σβήνει ραντεβού', (select count(*) from meetings where id=mid)=1);
+  perform t.as_user(p3); perform t.ok('άσχετος δεν βλέπει ραντεβού', t.n('select count(*) from meetings')=0);
+  perform t.as_user(p1); perform t.ok('ο άλλος γονέας βλέπει μόνο τη δική του συνάντηση', t.n('select count(*) from meetings')=1);
+  perform t.as_user('00000000-0000-0000-0000-0000000000d1');
+  perform t.fails('βοηθητικός εκπαιδευτικός δεν κλείνει ραντεβού', format($q$select create_meeting(%L,'intro',null, now()+interval '1 day', now()+interval '1 day 1 hour', null, null)$q$, p2));
+
+  -- Βοηθητικοί εκπαιδευτικοί (χωρίς έγκριση διδασκαλίας)
+  perform t.as_super();
+  insert into auth.users(id,email,raw_user_meta_data) values ('00000000-0000-0000-0000-0000000000d2','u3@x.gr','{"full_name":"Unapproved Three","account_type":"teacher"}');
+  perform t.as_user('00000000-0000-0000-0000-0000000000d1');
+  perform t.ok('ο βοηθητικός βλέπει τους 4 εγκεκριμένους στον κατάλογο', t.n('select count(*) from teacher_directory() where approved')=4);
+  perform t.ok('ο βοηθητικός ΔΕΝ βλέπει άλλον βοηθητικό', t.n(format($q$select count(*) from teacher_directory() where id=%L$q$, '00000000-0000-0000-0000-0000000000d2'))=0);
+  perform t.fails('βοηθητικός δεν προσθέτει μαθητή', $q$insert into students(teacher_id,full_name) values ('00000000-0000-0000-0000-0000000000d1','X')$q$);
+  perform t.fails('βοηθητικός δεν φτιάχνει μάθημα', $q$select create_lesson(array[]::uuid[], now(), now()+interval '1 hour', null, null)$q$);
+  perform t.fails('βοηθητικός δεν συνεργάζεται με άλλον βοηθητικό', format($q$select request_collab(%L)$q$, '00000000-0000-0000-0000-0000000000d2'));
+  perform request_collab(t1);
+  perform t.fails('ο αποστολέας δεν δέχεται τη δική του πρόσκληση', format($q$select respond_collab((select id from teacher_collabs where from_teacher=%L),true)$q$, '00000000-0000-0000-0000-0000000000d1'));
+  perform t.as_user('00000000-0000-0000-0000-0000000000d2');
+  perform t.ok('ο άλλος βοηθητικός δεν βλέπει τον πρώτο', t.n(format($q$select count(*) from teacher_directory() where id=%L$q$, '00000000-0000-0000-0000-0000000000d1'))=0);
+  perform t.as_user(t1);
+  perform t.ok('ο εγκεκριμένος βλέπει τον βοηθητικό στον κατάλογο', t.n(format($q$select count(*) from teacher_directory() where id=%L and not approved$q$, '00000000-0000-0000-0000-0000000000d1'))=1);
+  perform t.fails('βοηθός χωρίς αποδεκτή συνεργασία', format($q$select add_assistant(%L,%L)$q$, s1, '00000000-0000-0000-0000-0000000000d1'));
+  select id into cid from teacher_collabs where from_teacher='00000000-0000-0000-0000-0000000000d1';
+  perform respond_collab(cid,true);
+  perform add_assistant(s1,'00000000-0000-0000-0000-0000000000d1');
+  perform t.ok('ο βοηθητικός ορίστηκε βοηθός', t.n(format($q$select count(*) from student_assistants where assistant_id=%L$q$, '00000000-0000-0000-0000-0000000000d1'))=1);
+  perform create_support_session('00000000-0000-0000-0000-0000000000d1', array[s1], now()+interval '3 days', now()+interval '3 days 1 hour', null);
+  perform t.as_user(p2);
+  perform t.ok('ο γονέας δεν βλέπει βοηθητικούς στον κατάλογο', t.n(format($q$select count(*) from teacher_directory() where id=%L$q$, '00000000-0000-0000-0000-0000000000d1'))=0);
+  perform t.fails('ο γονέας δεν στέλνει πρόσκληση συνεργασίας', format($q$select request_collab(%L)$q$, t1));
+  perform t.as_user('00000000-0000-0000-0000-0000000000d1');
+  perform t.ok('ο βοηθητικός βλέπει τον μαθητή που βοηθά', t.n('select count(*) from students')=1);
+  perform t.ok('ο βοηθητικός βλέπει τη δική του ώρα υποστήριξης', t.n(format($q$select count(*) from support_sessions where assistant_id=%L$q$, '00000000-0000-0000-0000-0000000000d1'))=1);
+  perform t.ok('βλέπει και τις ώρες άλλων βοηθών για τον ίδιο μαθητή', t.n('select count(*) from support_sessions')=2);
+  perform t.fails('ο βοηθητικός δεν φτιάχνει ώρα υποστήριξης', format($q$select create_support_session(%L, array[%L]::uuid[], now(), now()+interval '1 hour', null)$q$, '00000000-0000-0000-0000-0000000000d1', s1));
 
   -- Ανώνυμος και Storage
   perform t.as_super(); reset role; set local role anon;

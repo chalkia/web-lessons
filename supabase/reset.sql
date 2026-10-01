@@ -11,6 +11,7 @@ drop table if exists
   public.support_sessions,
   public.lesson_students,
   public.lessons,
+  public.meetings,
   public.personal_events,
   public.interest_requests,
   public.teacher_collabs,
