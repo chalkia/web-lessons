@@ -26,6 +26,10 @@ create table if not exists public.profiles (
 -- Ποιος μπορεί να στέλνει αίτημα συνεργασίας σε εκπαιδευτικό: γονείς και ενήλικοι μαθητές.
 -- Οι ανήλικοι μαθητές δεν μπορούν (το ορίζει η επιλογή στην εγγραφή ή ο διαχειριστής).
 alter table public.profiles add column if not exists can_request boolean not null default false;
+-- Διαθεσιμότητα εκπαιδευτικού: δέχεται νέα αιτήματα γονέων / νέες προσκλήσεις συνεργασίας.
+-- Δεν επηρεάζει όσα έχουν ήδη γίνει. Τα αλλάζει ο ίδιος ο χρήστης.
+alter table public.profiles add column if not exists accepting_requests boolean not null default true;
+alter table public.profiles add column if not exists accepting_collabs boolean not null default true;
 
 create table if not exists public.students (
   id uuid primary key default gen_random_uuid(),
@@ -294,14 +298,16 @@ $$;
 drop function if exists public.teacher_directory();
 create or replace function public.teacher_directory()
 returns table (id uuid, full_name text, approved boolean, subjects text, bio text,
-               collab_id uuid, collab_status text, collab_direction text)
+               collab_id uuid, collab_status text, collab_direction text,
+               accepting_requests boolean, accepting_collabs boolean)
 language sql stable security definer set search_path = public as $$
   select p.id, p.full_name, coalesce(a.status = 'approved', false),
          case when a.status = 'approved' then a.subjects end,
          case when a.status = 'approved' then a.bio end,
          c.id, c.status,
          case when c.from_teacher = auth.uid() then 'out'
-              when c.to_teacher = auth.uid() then 'in' else null end
+              when c.to_teacher = auth.uid() then 'in' else null end,
+         p.accepting_requests, p.accepting_collabs
   from public.profiles p
   left join public.teacher_applications a on a.user_id = p.id
   left join public.teacher_collabs c
@@ -575,6 +581,9 @@ begin
      or not exists (select 1 from public.profiles where id = p_target and role = 'teacher') then
     raise exception 'Άκυρος εκπαιδευτικός';
   end if;
+  if not (select accepting_collabs from public.profiles where id = p_target) then
+    raise exception 'Ο εκπαιδευτικός δεν δέχεται προς το παρόν νέες συνεργασίες';
+  end if;
   -- Ο βοηθητικός (χωρίς έγκριση) συνεργάζεται μόνο με εγκεκριμένο, όχι με άλλον βοηθητικό.
   if not (public.is_approved_teacher(auth.uid()) or public.is_approved_teacher(p_target)) then
     raise exception 'Η συνεργασία χρειάζεται τουλάχιστον έναν εγκεκριμένο εκπαιδευτικό';
@@ -637,6 +646,9 @@ begin
   end if;
   if not public.is_approved_teacher(p_teacher) then
     raise exception 'Ο εκπαιδευτικός δεν είναι διαθέσιμος';
+  end if;
+  if not (select accepting_requests from public.profiles where id = p_teacher) then
+    raise exception 'Ο εκπαιδευτικός δεν δέχεται προς το παρόν νέα αιτήματα';
   end if;
   if coalesce(trim(p_child),'') = '' or length(p_child) > 100
      or length(coalesce(p_grade,'')) > 50 or length(coalesce(p_msg,'')) > 1000 then

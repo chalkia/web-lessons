@@ -180,6 +180,27 @@ begin
   perform t.as_super(); perform t.ok('ο διαχειριστής δίνει can_request', (select can_request from profiles where id=p1));
   update profiles set can_request=false where id=p1;
 
+  -- Διαθεσιμότητα
+  perform t.as_user(t3);
+  update profiles set accepting_requests=false where id=t3;
+  perform t.ok('ο εκπαιδευτικός αλλάζει τη διαθεσιμότητά του', not (select accepting_requests from profiles where id=t3));
+  perform t.as_user(p2);
+  perform t.fails('αίτημα σε εκπαιδευτικό που δεν δέχεται', format($q$select send_interest(%L,'Ξ',null,null)$q$, t3));
+  perform t.ok('ο κατάλογος δείχνει ότι δεν δέχεται', t.n(format($q$select count(*) from teacher_directory() where id=%L and not accepting_requests$q$, t3))=1);
+  perform t.as_user(t3);
+  update profiles set accepting_requests=true, accepting_collabs=false where id=t3;
+  perform t.as_user(t2);
+  perform t.fails('πρόσκληση σε εκπαιδευτικό που δεν δέχεται συνεργασίες', format($q$select request_collab(%L)$q$, t3));
+  perform t.as_user(t3);
+  update profiles set accepting_collabs=true where id=t3;
+  perform t.as_user(t2);
+  update profiles set accepting_requests=false where id=t1;
+  perform t.as_super(); perform t.ok('δεν αλλάζει τη διαθεσιμότητα άλλου', (select accepting_requests from profiles where id=t1));
+  perform t.as_user(p2);
+  perform send_interest(t3,'Παιδί Γ',null,null);
+  perform t.as_user(t3);
+  perform t.ok('αίτημα όταν ξανάνοιξε η διαθεσιμότητα', t.n('select count(*) from interest_requests')=1);
+
   -- Ραντεβού γνωριμίας και συναντήσεις γονέων
   perform t.as_user(t1);
   mid := create_meeting(p2,'intro',null, now()+interval '1 day', now()+interval '1 day 30 minutes', null, 'Γνωριμία');

@@ -225,6 +225,13 @@
       var others = dir.filter(function (d) { return !d.collab_status; });
       view.innerHTML =
         '<h1>Συνεργάτες</h1>' +
+        '<div class="card"><h2>Διαθεσιμότητα</h2>' +
+        '<p class="muted">Αν δεν ενδιαφέρεσαι για νέες συνεργασίες, κλείσε τους διακόπτες. Όσα ισχύουν ήδη δεν αλλάζουν.</p>' +
+        (App.canTeach()
+          ? '<label class="check"><input type="checkbox" data-change="avail-requests"' + (App.state.profile.accepting_requests ? ' checked' : '') + '> Δέχομαι νέα αιτήματα από γονείς και μαθητές</label><br>'
+          : '') +
+        '<label class="check"><input type="checkbox" data-change="avail-collabs"' + (App.state.profile.accepting_collabs ? ' checked' : '') + '> ' +
+        (App.canTeach() ? 'Δέχομαι νέες προσκλήσεις συνεργασίας από άλλους εκπαιδευτικούς' : 'Δέχομαι νέες προσκλήσεις συνεργασίας ως βοηθός') + '</label></div>' +
         (App.canTeach()
           ? '<p class="muted">Εδώ βλέπεις τους άλλους εκπαιδευτικούς, και τους βοηθητικούς που δεν έχουν ακόμη έγκριση. Όποιον αποδεχτεί πρόσκληση συνεργασίας μπορείς να τον ορίσεις βοηθό στους μαθητές σου.</p>'
           : '<p class="muted">Είσαι βοηθητικός εκπαιδευτικός. Στείλε πρόσκληση σε εγκεκριμένο εκπαιδευτικό. Αν την αποδεχτεί, μπορεί να σε ορίσει βοηθό στους μαθητές του.</p>') +
@@ -241,7 +248,9 @@
         }).join('') : '') +
         '<h2>' + (App.canTeach() ? 'Άλλοι εκπαιδευτικοί' : 'Εγκεκριμένοι εκπαιδευτικοί') + '</h2>' +
         (others.length ? others.map(function (d) {
-          return teacherCard(d, '<p><button class="primary" data-action="collab-request" data-id="' + esc(d.id) + '">Πρόσκληση συνεργασίας</button></p>');
+          return teacherCard(d, d.accepting_collabs
+            ? '<p><button class="primary" data-action="collab-request" data-id="' + esc(d.id) + '">Πρόσκληση συνεργασίας</button></p>'
+            : '<p><span class="badge draft">Δεν δέχεται νέες συνεργασίες</span></p>');
         }).join('') : '<div class="card"><p class="empty">Δεν υπάρχουν άλλοι εκπαιδευτικοί.</p></div>');
       return;
     }
@@ -265,7 +274,9 @@
       (dir.length ? dir.map(function (d) {
         var form = pendingTo.indexOf(d.id) !== -1
           ? '<p><span class="badge pending">Έχεις στείλει αίτημα</span></p>'
-          : '<form data-form="send-interest" data-teacher="' + esc(d.id) + '" class="spaced">' +
+          : !d.accepting_requests
+            ? '<p><span class="badge draft">Δεν δέχεται προς το παρόν νέα αιτήματα</span></p>'
+            : '<form data-form="send-interest" data-teacher="' + esc(d.id) + '" class="spaced">' +
           '<label class="field">Όνομα παιδιού<input name="child" maxlength="100" required></label>' +
           '<label class="field">Τάξη<input name="grade" maxlength="50"></label>' +
           '<label class="field">Μήνυμα<textarea name="msg" rows="2" maxlength="1000"></textarea></label>' +
@@ -273,6 +284,18 @@
         return teacherCard(d, form);
       }).join('') : '<div class="card"><p class="empty">Δεν υπάρχουν ακόμη εγκεκριμένοι εκπαιδευτικοί.</p></div>');
   };
+
+  // Διαθεσιμότητα του ίδιου του χρήστη. Ελέγχουμε ότι πράγματι άλλαξε γραμμή.
+  async function setAvail(column, value) {
+    var patch = {};
+    patch[column] = value;
+    var rows = await must(sb.from('profiles').update(patch).eq('id', App.state.profile.id).select('id'));
+    if (!rows.length) { throw new Error('Η αλλαγή δεν εφαρμόστηκε.'); }
+    App.state.profile[column] = value;
+    App.toast(value ? 'Ξανά διαθέσιμος.' : 'Δεν θα δέχεσαι νέα αιτήματα.');
+  }
+  App.changes['avail-requests'] = function (t) { return setAvail('accepting_requests', t.checked); };
+  App.changes['avail-collabs'] = function (t) { return setAvail('accepting_collabs', t.checked); };
 
   App.actions['collab-request'] = async function (t) {
     await must(sb.rpc('request_collab', { p_target: t.getAttribute('data-id') }));

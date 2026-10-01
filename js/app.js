@@ -7,7 +7,7 @@
 
   async function loadProfile() {
     var uid = state.session.user.id;
-    var rows = await must(sb.from('profiles').select('id, full_name, email, role, can_request').eq('id', uid).limit(1));
+    var rows = await must(sb.from('profiles').select('id, full_name, email, role, can_request, accepting_requests, accepting_collabs').eq('id', uid).limit(1));
     if (!rows.length) { throw new Error('Δεν βρέθηκε το προφίλ σου. Δοκίμασε ξανά ή επικοινώνησε με τον διαχειριστή.'); }
     state.profile = rows[0];
     await App.loadApplication();

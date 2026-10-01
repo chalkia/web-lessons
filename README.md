@@ -81,5 +81,6 @@ bash tools/db-test/run.sh
 - `js/page-people.js`: μαθητές, συνεργάτες, αιτήματα
 - `js/page-lessons.js`: αρχική, δωμάτιο, ημερολόγιο, ώρες υποστήριξης, προσωπικό ημερολόγιο
 - `js/app.js`: δρομολόγηση και εκκίνηση
+- `docs/ROLES.md`: ρόλοι και δικαιώματα (ενημερώνεται σε κάθε αλλαγή)
 - `supabase/schema.sql`, `supabase/reset.sql`
 - `tools/check.js`, `tools/db-test/`
