@@ -181,7 +181,11 @@ create policy profiles_self_name on public.profiles for update
 create or replace function public.protect_role() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
-  if new.role is distinct from old.role and not public.is_admin() then
+  -- auth.uid() is null όταν τρέχει το SQL Editor του Supabase (ή service role).
+  -- Το επιτρέπουμε ώστε να ορίζεται ο πρώτος διαχειριστής (διόρθωση 2026-10-01:
+  -- χωρίς αυτό το update του πρώτου admin απέρριπτε το "Μόνο ο διαχειριστής αλλάζει ρόλους").
+  -- Οι χρήστες της σελίδας έχουν πάντα auth.uid(), άρα δεν επηρεάζονται.
+  if auth.uid() is not null and new.role is distinct from old.role and not public.is_admin() then
     raise exception 'Μόνο ο διαχειριστής αλλάζει ρόλους';
   end if;
   return new;
