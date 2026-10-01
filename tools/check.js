@@ -74,7 +74,36 @@ function topLevel(list) {
   return out;
 }
 
-for (const f of jsFiles) {
+// Συναρτήσεις rpc: όνομα -> παράμετροι (από το schema.sql)
+const fns = {};
+const fRe = /create or replace function public\.(\w+)\s*\(([^)]*)\)/g;
+let fm;
+while ((fm = fRe.exec(schema))) {
+  fns[fm[1]] = new Set(topLevel(fm[2]).map((p) => p.trim().split(/\s+/)[0]).filter(Boolean));
+}
+
+// Έλεγχος ενός select με εμφωλευμένες σχέσεις. Ένα όνομα σχέσης = όνομα πίνακα.
+function checkSelect(table, text, rel, where) {
+  const cols = tables[table];
+  if (!cols) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + table + ' (' + rel + ')'); return; }
+  for (let part of topLevel(text)) {
+    part = part.replace(/\s+/g, ' ').trim();
+    if (!part || part === '*') { continue; }
+    const open = part.indexOf('(');
+    if (open === -1) {
+      const col = part.includes(':') ? part.split(':').pop().trim() : part;
+      if (!cols.has(col)) { findings.push('ΑΝΥΠΑΡΚΤΗ ΣΤΗΛΗ ' + table + '.' + col + ' στο ' + where + ' (' + rel + ')'); }
+    } else {
+      let name = part.slice(0, open).trim();
+      name = name.replace(/!.*$/, '');
+      if (name.includes(':')) { name = name.split(':').pop().trim(); }
+      const inner = part.slice(open + 1, part.lastIndexOf(')'));
+      checkSelect(name, inner, rel, where);
+    }
+  }
+}
+
+for (const f of jsFiles.filter((x) => !x.includes(path.sep + 'tools' + path.sep))) {
   const src = fs.readFileSync(f, 'utf8');
   const rel = path.relative(root, f);
   let m;
@@ -82,22 +111,27 @@ for (const f of jsFiles) {
   while ((m = wRe.exec(src))) {
     const cols = tables[m[1]];
     if (!cols) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + m[1] + ' (' + rel + ')'); continue; }
-    const kRe = /(\w+)\s*:/g; let k;
+    const kRe = /(?:^|[,{\s])(\w+)\s*:/g; let k;
     while ((k = kRe.exec(m[3]))) {
       if (!cols.has(k[1])) { findings.push('ΑΝΥΠΑΡΚΤΗ ΣΤΗΛΗ ' + m[1] + '.' + k[1] + ' (' + rel + ')'); }
     }
   }
-  const sRe = /\.from\('(\w+)'\)\s*\.select\('([^']*)'\)/g;
-  while ((m = sRe.exec(src))) {
-    const cols = tables[m[1]];
-    if (!cols) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + m[1] + ' (' + rel + ')'); continue; }
-    for (const part of topLevel(m[2])) {
-      if (part.includes('(')) {
-        const rel2 = part.slice(0, part.indexOf('('));
-        if (!tables[rel2]) { findings.push('ΑΝΥΠΑΡΚΤΗ ΣΧΕΣΗ ' + rel2 + ' στο select του ' + m[1] + ' (' + rel + ')'); }
-      } else if (part !== '*' && !cols.has(part)) {
-        findings.push('ΑΝΥΠΑΡΚΤΗ ΣΤΗΛΗ ' + m[1] + '.' + part + ' στο select (' + rel + ')');
-      }
+  const sRe = /\.from\('(\w+)'\)\s*\.select\(\s*'([^']*)'/g;
+  while ((m = sRe.exec(src))) { checkSelect(m[1], m[2], rel, 'select'); }
+  // Κάθε .from('x') πρέπει να είναι γνωστός πίνακας
+  const fromRe = /\.from\('(\w+)'\)/g;
+  while ((m = fromRe.exec(src))) {
+    if (!tables[m[1]] && !['credentials'].includes(m[1])) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + m[1] + ' (' + rel + ')'); }
+  }
+  // rpc: όνομα και κλειδιά παραμέτρων
+  const rRe = /\.rpc\('(\w+)'(?:,\s*\{([\s\S]*?)\})?\s*\)/g;
+  while ((m = rRe.exec(src))) {
+    if (!fns[m[1]]) { findings.push('ΑΝΥΠΑΡΚΤΗ RPC ' + m[1] + ' (' + rel + ')'); continue; }
+    const keys = [];
+    const kRe = /(?:^|[,{\s])(\w+)\s*:/g; let k;
+    while ((k = kRe.exec(m[2] || ''))) { keys.push(k[1]); }
+    for (const key of keys) {
+      if (!fns[m[1]].has(key)) { findings.push('ΑΝΥΠΑΡΚΤΗ ΠΑΡΑΜΕΤΡΟΣ ' + m[1] + '(' + key + ') (' + rel + ')'); }
     }
   }
 }

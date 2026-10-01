@@ -87,3 +87,21 @@ th { color: var(--muted); font-weight: 600; }
 @media (max-width: 600px) {
   th:nth-child(n+4), td:nth-child(n+4) { font-size: 13px; }
 }
+
+/* Κουμπί-σύνδεσμος (π.χ. «Σύνδεση» στο δωμάτιο) */
+a.btn {
+  display: inline-block; padding: 8px 14px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--card); color: var(--text); text-decoration: none; font: inherit;
+}
+a.btn.primary { background: var(--primary); color: var(--primary-text); border-color: var(--primary); }
+label.check { display: flex; gap: 8px; align-items: center; color: var(--text); margin: 4px 0; }
+label.check input { width: auto; }
+.badge.pending { color: var(--warn); border-color: var(--warn); }
+.badge.approved, .badge.accepted { color: var(--ok); border-color: var(--ok); }
+.badge.rejected, .badge.declined { color: var(--bad); border-color: var(--bad); }
+.badge.draft { color: var(--muted); }
+.spaced > * + * { margin-top: 8px; }
+label.field { display: block; }
+label.field input, label.field textarea, label.field select { margin-top: 4px; }
+.row-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
+.row-line select { width: auto; }
