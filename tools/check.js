@@ -78,7 +78,7 @@ for (const f of jsFiles) {
   const src = fs.readFileSync(f, 'utf8');
   const rel = path.relative(root, f);
   let m;
-  const wRe = /\.from\('(\w+)'\)\s*\.(insert|update)\(\{([\s\S]*?)\}\)/g;
+  const wRe = /\.from\('(\w+)'\)\s*\.(insert|update|upsert)\(\{([\s\S]*?)\}\)/g;
   while ((m = wRe.exec(src))) {
     const cols = tables[m[1]];
     if (!cols) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + m[1] + ' (' + rel + ')'); continue; }

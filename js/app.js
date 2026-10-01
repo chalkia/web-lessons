@@ -44,13 +44,11 @@
     return (new Date(l.ends_at) - new Date(l.starts_at)) / 3600000;
   }
 
+  // Είδος λογαριασμού. Ο γονέας και ο βοηθός ΔΕΝ είναι είδη λογαριασμού: είναι σχέσεις ανά μαθητή.
   var ROLE_LABEL = {
-    pending: 'Σε αναμονή',
     admin: 'Διαχειριστής',
-    main_teacher: 'Βασικός εκπαιδευτικός',
-    assistant_teacher: 'Βοηθητικός εκπαιδευτικός',
-    student: 'Μαθητής',
-    parent: 'Γονέας'
+    teacher: 'Εκπαιδευτικός',
+    student: 'Μαθητής / γονέας'
   };
   var STATUS_LABEL = {
     planned: 'Προγραμματισμένο',
@@ -58,10 +56,11 @@
     cancelled: 'Ακυρώθηκε',
     absent: 'Απουσία'
   };
+  // Σχέσεις ανά μαθητή. Ένας λογαριασμός μπορεί να έχει διαφορετική σχέση με διαφορετικούς μαθητές.
   var RELATION_LABEL = {
     student: 'Μαθητής',
     parent: 'Γονέας',
-    assistant_teacher: 'Βοηθητικός εκπαιδευτικός'
+    assistant_teacher: 'Βοηθός εκπαιδευτικός'
   };
 
   // ---------- Σύνδεση με Supabase ----------
@@ -89,7 +88,13 @@
   }
 
   function canWrite() {
-    return state.profile && (state.profile.role === 'admin' || state.profile.role === 'main_teacher');
+    return state.profile && (state.profile.role === 'admin' || state.profile.role === 'teacher');
+  }
+
+  // Μπορεί ο τρέχων χρήστης να αλλάξει αυτό το μάθημα/μαθητή; Μόνο ο εκπαιδευτικός του (ή ο διαχειριστής).
+  // Ο βοηθός βλέπει αλλά δεν αλλάζει (και η βάση τον μπλοκάρει ούτως ή άλλως).
+  function ownsTeacher(teacherId) {
+    return state.profile && (state.profile.role === 'admin' || state.profile.id === teacherId);
   }
 
   // ---------- Είσοδος ----------
@@ -102,6 +107,9 @@
       '<h1>' + (reg ? 'Εγγραφή' : 'Είσοδος') + '</h1>' +
       '<form data-form="auth">' +
       (reg ? '<label for="a-name">Ονοματεπώνυμο</label><input id="a-name" name="name" required>' : '') +
+      (reg ? '<label for="a-type">Εγγράφομαι ως</label><select id="a-type" name="account_type">' +
+        '<option value="student">Μαθητής ή γονέας</option>' +
+        '<option value="teacher">Εκπαιδευτικός</option></select>' : '') +
       '<label for="a-email">Email</label><input id="a-email" name="email" type="email" required>' +
       '<label for="a-pass">Κωδικός</label><input id="a-pass" name="password" type="password" minlength="8" required>' +
       '<p><button class="primary" type="submit">' + (reg ? 'Εγγραφή' : 'Είσοδος') + '</button></p>' +
@@ -109,7 +117,7 @@
       '<p class="muted">' + (reg
         ? 'Έχεις λογαριασμό; <a href="#" data-action="toggle-auth">Είσοδος</a>'
         : 'Νέος χρήστης; <a href="#" data-action="toggle-auth">Εγγραφή</a>') + '</p>' +
-      (reg ? '<p class="muted">Γράψε το ίδιο email που έδωσες στον εκπαιδευτικό σου, ώστε να συνδεθείς αυτόματα.</p>' : '') +
+      (reg ? '<p class="muted">Αν σε έχει προσκαλέσει εκπαιδευτικός, γράψε το ίδιο email που του έδωσες. Έτσι συνδέεσαι αυτόματα με τον μαθητή. Οι βοηθοί εγγράφονται ως εκπαιδευτικοί.</p>' : '') +
       '</div>';
   }
 
@@ -118,11 +126,9 @@
   function renderNav(active) {
     var role = state.profile.role;
     var items = [['#/', 'Αρχική', 'home']];
-    if (role === 'admin' || role === 'main_teacher') { items.push(['#/students', 'Μαθητές', 'students']); }
-    if (role !== 'pending') {
-      items.push(['#/calendar', 'Ημερολόγιο', 'calendar']);
-      items.push(['#/personal', 'Προσωπικό', 'personal']);
-    }
+    if (role === 'admin' || role === 'teacher') { items.push(['#/students', 'Μαθητές', 'students']); }
+    items.push(['#/calendar', 'Ημερολόγιο', 'calendar']);
+    items.push(['#/personal', 'Προσωπικό', 'personal']);
     if (role === 'admin') { items.push(['#/users', 'Χρήστες', 'users']); }
     el('nav').innerHTML = items.map(function (i) {
       return '<a href="' + i[0] + '"' + (i[2] === active ? ' class="active"' : '') + '>' + esc(i[1]) + '</a>';
@@ -134,11 +140,6 @@
   async function pageHome() {
     renderNav('home');
     var role = state.profile.role;
-    if (role === 'pending') {
-      view.innerHTML = '<div class="card"><h2>Ο λογαριασμός σου περιμένει έγκριση</h2>' +
-        '<p>Ο διαχειριστής ή ο εκπαιδευτικός σου πρέπει να σου δώσει ρόλο. Δοκίμασε ξανά αργότερα.</p></div>';
-      return;
-    }
     var nowIso = new Date().toISOString();
     var lessons = await must(sb.from('lessons')
       .select('id, starts_at, ends_at, meeting_url, status, students(full_name)')
@@ -148,7 +149,7 @@
       .select('id, title, due_at').eq('done', false).order('due_at').limit(5));
 
     var tiles = '';
-    if (role === 'admin' || role === 'main_teacher') {
+    if (role === 'admin' || role === 'teacher') {
       tiles += '<a class="tile" href="#/students"><strong>Μαθητές</strong><span>Μαθητές, γονείς και βοηθοί</span></a>';
     }
     tiles += '<a class="tile" href="#/calendar"><strong>Ημερολόγιο / Παρουσιολόγιο</strong><span>Προγραμματισμένες και πραγματοποιημένες ώρες</span></a>';
@@ -186,7 +187,17 @@
   async function pageStudents() {
     renderNav('students');
     if (!canWrite()) { location.hash = '#/'; return; }
-    var students = await must(sb.from('students').select('id, full_name, grade').order('full_name'));
+    var all = await must(sb.from('students').select('id, full_name, grade, teacher_id').order('full_name'));
+    // Οι δικοί μου μαθητές (ο διαχειριστής τους βλέπει όλους) και, χωριστά, όσοι βοηθάω.
+    var students = all.filter(function (s) { return ownsTeacher(s.teacher_id); });
+    var assisted = all.filter(function (s) { return !ownsTeacher(s.teacher_id); });
+    var assistedHtml = assisted.length
+      ? '<div class="card"><h2>Μαθητές όπου είμαι βοηθός</h2>' +
+        '<p class="muted">Τους βλέπεις και βλέπεις τα μαθήματά τους στο ημερολόγιο. Δεν τους επεξεργάζεσαι.</p>' +
+        '<table><tbody>' + assisted.map(function (s) {
+          return '<tr><td>' + esc(s.full_name) + '</td><td>' + esc(s.grade) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '';
     view.innerHTML =
       '<h1>Μαθητές</h1>' +
       '<div class="card"><h2>Νέος μαθητής</h2>' +
@@ -203,15 +214,21 @@
             '<td><a href="#/student/' + esc(s.id) + '">Άνοιγμα</a></td></tr>';
         }).join('') + '</tbody></table>'
         : '<p class="empty">Δεν έχεις ακόμη μαθητές.</p>') +
-      '</div>';
+      '</div>' + assistedHtml;
   }
 
   async function pageStudent(id) {
     renderNav('students');
     if (!canWrite()) { location.hash = '#/'; return; }
-    var rows = await must(sb.from('students').select('id, full_name, grade, notes, user_id').eq('id', id).limit(1));
+    var rows = await must(sb.from('students').select('id, teacher_id, full_name, grade, user_id').eq('id', id).limit(1));
     if (!rows.length) { view.innerHTML = '<div class="card"><p>Δεν βρέθηκε ο μαθητής.</p></div>'; return; }
     var s = rows[0];
+    if (!ownsTeacher(s.teacher_id)) {
+      view.innerHTML = '<div class="card"><p>Είσαι βοηθός σε αυτόν τον μαθητή. Τον επεξεργάζεται μόνο ο εκπαιδευτικός του.</p></div>';
+      return;
+    }
+    var noteRows = await must(sb.from('student_notes').select('notes').eq('student_id', id).limit(1));
+    var noteText = noteRows.length ? noteRows[0].notes : '';
     var invites = await must(sb.from('invites').select('id, email, relation').eq('student_id', id).order('created_at'));
     var parents = await must(sb.from('student_parents').select('parent_id, profiles(full_name, email)').eq('student_id', id));
     var assistants = await must(sb.from('student_assistants').select('assistant_id, profiles(full_name, email)').eq('student_id', id));
@@ -226,18 +243,19 @@
       '<label for="e-name">Ονοματεπώνυμο</label><input id="e-name" name="name" value="' + esc(s.full_name) + '" required>' +
       '<label for="e-grade">Τάξη</label><input id="e-grade" name="grade" value="' + esc(s.grade) + '">' +
       '<label for="e-notes">Σημειώσεις (ορατές μόνο σε σένα και στους διαχειριστές)</label>' +
-      '<textarea id="e-notes" name="notes" rows="3">' + esc(s.notes) + '</textarea>' +
+      '<textarea id="e-notes" name="notes" rows="3">' + esc(noteText) + '</textarea>' +
       '<p><button class="primary" type="submit">Αποθήκευση</button> ' +
       '<button type="button" class="danger" data-action="delete-student" data-id="' + esc(s.id) + '">Διαγραφή μαθητή</button></p>' +
       '</form></div>' +
       '<div class="card"><h2>Πρόσβαση (μαθητής, γονείς, βοηθοί)</h2>' +
-      '<p class="muted">Γράψε το email και επέλεξε ρόλο. Ο άνθρωπος πρέπει να εγγραφεί ΜΕΤΑ την πρόσκληση, με το ίδιο email. Τότε συνδέεται αυτόματα.</p>' +
+      '<p class="muted">Γράψε το email και επέλεξε σχέση. Αν ο άνθρωπος έχει ήδη λογαριασμό, συνδέεται αμέσως. Αλλιώς συνδέεται μόλις εγγραφεί με το ίδιο email. ' +
+      'Βοηθός μπορεί να γίνει μόνο όποιος έχει λογαριασμό εκπαιδευτικού.</p>' +
       '<form data-form="add-invite" data-id="' + esc(s.id) + '" class="row">' +
       '<div><label for="i-email">Email</label><input id="i-email" name="email" type="email" required></div>' +
       '<div><label for="i-rel">Ρόλος</label><select id="i-rel" name="relation">' +
       Object.keys(RELATION_LABEL).map(function (k) { return '<option value="' + k + '">' + esc(RELATION_LABEL[k]) + '</option>'; }).join('') +
       '</select></div><button class="primary" type="submit">Πρόσκληση</button></form>' +
-      '<h2 style="margin-top:16px">Εκκρεμείς προσκλήσεις</h2>' +
+      '<h2 style="margin-top:16px">Προσκλήσεις σε αναμονή</h2>' +
       (invites.length
         ? '<table><tbody>' + invites.map(function (i) {
           return '<tr><td>' + esc(i.email) + '</td><td>' + esc(RELATION_LABEL[i.relation]) + '</td>' +
@@ -266,7 +284,7 @@
     renderNav('calendar');
     var students = await must(sb.from('students').select('id, full_name, teacher_id').order('full_name'));
     var q = sb.from('lessons')
-      .select('id, student_id, starts_at, ends_at, status, meeting_url, notes, students(full_name)')
+      .select('id, teacher_id, student_id, starts_at, ends_at, status, meeting_url, notes, students(full_name)')
       .order('starts_at', { ascending: calFilter.period !== 'past' });
     var nowIso = new Date().toISOString();
     if (calFilter.period === 'upcoming') { q = q.gte('ends_at', nowIso); }
@@ -295,7 +313,7 @@
         ? '<div class="card"><h2>Νέο μάθημα</h2><form data-form="add-lesson" class="row">' +
         '<div><label for="l-student">Μαθητής</label><select id="l-student" name="student" required>' +
         '<option value="">—</option>' +
-        students.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.full_name) + '</option>'; }).join('') +
+        students.filter(function (s) { return ownsTeacher(s.teacher_id); }).map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.full_name) + '</option>'; }).join('') +
         '</select></div>' +
         '<div><label for="l-start">Έναρξη</label><input id="l-start" name="start" type="datetime-local" value="' + toLocalInput(start) + '" required></div>' +
         '<div><label for="l-dur">Διάρκεια (λεπτά)</label><input id="l-dur" name="duration" type="number" min="15" step="15" value="60" required></div>' +
@@ -322,16 +340,17 @@
         ? '<table><thead><tr><th>Πότε</th><th>Μαθητής</th><th>Κατάσταση</th><th>Βιντεοκλήση</th>' + (write ? '<th></th>' : '') + '</tr></thead><tbody>' +
         lessons.map(function (l) {
           var url = safeUrl(l.meeting_url);
+          var mine = ownsTeacher(l.teacher_id);
           return '<tr><td>' + esc(fmt(l.starts_at)) + ' <span class="muted">(' + hours(l).toFixed(1) + ' ω)</span></td>' +
             '<td>' + esc(l.students ? l.students.full_name : '') + '</td>' +
-            '<td>' + (write
+            '<td>' + (mine
               ? '<select data-change="lesson-status" data-id="' + esc(l.id) + '">' +
               Object.keys(STATUS_LABEL).map(function (k) {
                 return '<option value="' + k + '"' + (k === l.status ? ' selected' : '') + '>' + esc(STATUS_LABEL[k]) + '</option>';
               }).join('') + '</select>'
               : '<span class="badge ' + esc(l.status) + '">' + esc(STATUS_LABEL[l.status]) + '</span>') + '</td>' +
             '<td>' + (url ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">Σύνδεσμος</a>' : '<span class="muted">—</span>') + '</td>' +
-            (write ? '<td><button class="danger" data-action="delete-lesson" data-id="' + esc(l.id) + '">Διαγραφή</button></td>' : '') +
+            (write ? '<td>' + (mine ? '<button class="danger" data-action="delete-lesson" data-id="' + esc(l.id) + '">Διαγραφή</button>' : '') + '</td>' : '') +
             '</tr>';
         }).join('') + '</tbody></table>'
         : '<p class="empty">Δεν υπάρχουν μαθήματα.</p>') +
@@ -366,7 +385,7 @@
     var users = await must(sb.from('profiles').select('id, email, full_name, role, created_at').order('created_at', { ascending: false }));
     view.innerHTML =
       '<h1>Χρήστες</h1><div class="card">' +
-      '<p class="muted">Νέοι χρήστες χωρίς πρόσκληση μένουν «Σε αναμονή» μέχρι να τους δώσεις ρόλο.</p>' +
+      '<p class="muted">Οι νέοι χρήστες διαλέγουν μόνοι τους «Εκπαιδευτικός» ή «Μαθητής / γονέας». Ο ρόλος «Διαχειριστής» δίνεται μόνο από εδώ.</p>' +
       '<table><thead><tr><th>Όνομα</th><th>Email</th><th>Ρόλος</th></tr></thead><tbody>' +
       users.map(function (u) {
         return '<tr><td>' + esc(u.full_name) + '</td><td>' + esc(u.email) + '</td><td>' +
@@ -452,7 +471,8 @@
       var password = f.elements['password'].value;
       if (state.authMode === 'register') {
         var name = f.elements['name'].value.trim();
-        var r = await sb.auth.signUp({ email: email, password: password, options: { data: { full_name: name } } });
+        var type = f.elements['account_type'].value;
+        var r = await sb.auth.signUp({ email: email, password: password, options: { data: { full_name: name, account_type: type } } });
         if (r.error) { throw new Error(r.error.message); }
         if (!r.data.session) {
           toast('Έλεγξε το email σου για επιβεβαίωση και μετά κάνε είσοδο.');
@@ -473,21 +493,28 @@
       await pageStudents();
     },
     'edit-student': async function (f) {
+      var sid = f.getAttribute('data-id');
       await must(sb.from('students').update({
         full_name: f.elements['name'].value.trim(),
-        grade: f.elements['grade'].value.trim() || null,
+        grade: f.elements['grade'].value.trim() || null
+      }).eq('id', sid));
+      // Οι σημειώσεις είναι σε χωριστό πίνακα, ορατές μόνο στον εκπαιδευτικό και στον διαχειριστή.
+      await must(sb.from('student_notes').upsert({
+        student_id: sid,
         notes: f.elements['notes'].value.trim() || null
-      }).eq('id', f.getAttribute('data-id')));
+      }));
       toast('Αποθηκεύτηκε.');
-      await pageStudent(f.getAttribute('data-id'));
+      await pageStudent(sid);
     },
     'add-invite': async function (f) {
       var sid = f.getAttribute('data-id');
-      await must(sb.from('invites').insert({
-        student_id: sid,
-        email: f.elements['email'].value.trim().toLowerCase(),
-        relation: f.elements['relation'].value
+      // Η συνάρτηση της βάσης συνδέει αμέσως αν υπάρχει λογαριασμός, αλλιώς καταχωρεί πρόσκληση.
+      await must(sb.rpc('add_access', {
+        sid: sid,
+        target_email: f.elements['email'].value.trim().toLowerCase(),
+        rel: f.elements['relation'].value
       }));
+      toast('Καταχωρήθηκε.');
       await pageStudent(sid);
     },
     'add-lesson': async function (f) {
