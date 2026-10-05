@@ -8,7 +8,7 @@
     actions: {},   // data-action -> function(button)
     forms: {},     // data-form -> async function(form)
     changes: {},   // data-change -> async function(select/checkbox)
-    state: { session: null, profile: null, application: null, authMode: 'login' },
+    state: { session: null, profile: null, application: null, authMode: 'login', needPassword: false, authError: '' },
     ready: false
   };
 
@@ -117,6 +117,18 @@
   App.hours = hours;
   App.nextHour = nextHour;
 
+  // Ο σύνδεσμος του email (πρόσκληση ή επαναφορά) φέρνει τον χρήστη με #...type=invite|recovery.
+  // Το κρατάμε ΠΡΙΝ δημιουργηθεί ο πελάτης Supabase, γιατί εκείνος καθαρίζει το hash.
+  (function () {
+    var h = location.hash || '';
+    if (/[#&]type=(invite|recovery)\b/.test(h)) { App.state.needPassword = true; }
+    if (/[#&]error_code=/.test(h)) {
+      App.state.authError = /otp_expired/.test(h)
+        ? 'Ο σύνδεσμος έληξε ή χρησιμοποιήθηκε ήδη. Πάτα «Ξέχασα τον κωδικό» για νέο email, ή ζήτησε από τον εκπαιδευτικό σου να το στείλει ξανά.'
+        : 'Ο σύνδεσμος δεν είναι έγκυρος. Πάτα «Ξέχασα τον κωδικό» για νέο email.';
+    }
+  })();
+
   // ---------- Σύνδεση με Supabase ----------
 
   var cfg = window.APP_CONFIG;
@@ -139,6 +151,20 @@
   App.must = async function (promise) {
     var r = await promise;
     if (r.error) { throw new Error(r.error.message); }
+    return r.data;
+  };
+
+  // Κλήση της Edge Function invite-student. Το μήνυμα σφάλματος της συνάρτησης περνά αυτούσιο.
+  App.inviteStudent = async function (body) {
+    var r = await App.sb.functions.invoke('invite-student', { body: body });
+    if (r.error) {
+      var msg = r.error.message;
+      try {
+        var j = await r.error.context.json();
+        if (j && j.error) { msg = j.error; }
+      } catch (e) { /* κρατάμε το γενικό μήνυμα */ }
+      throw new Error(msg);
+    }
     return r.data;
   };
 

@@ -16,7 +16,15 @@
     App.renderNav('students');
     if (!App.canTeach() && !App.isTeacher()) { denyTeaching(); return; }
     var write = App.canTeach();
-    var all = await must(sb.from('students').select('id, full_name, grade, teacher_id').order('full_name'));
+    var all = await must(sb.from('students').select('id, full_name, grade, teacher_id, user_id, profiles!user_id(password_set)').order('full_name'));
+    var inviteRows = write ? await must(sb.from('invites').select('student_id').eq('relation', 'student')) : [];
+    var invited = {};
+    inviteRows.forEach(function (i) { invited[i.student_id] = true; });
+    // Σε εκκρεμότητα: έχει σταλεί πρόσκληση αλλά ο μαθητής δεν έχει ορίσει ακόμη κωδικό.
+    function pendingBadge(s) {
+      var waiting = invited[s.id] || (s.user_id && s.profiles && !s.profiles.password_set);
+      return waiting ? ' <span class="badge pending">Εκκρεμεί κωδικός</span>' : '';
+    }
     // Οι δικοί μου μαθητές (ο διαχειριστής τους βλέπει όλους) και, χωριστά, όσοι βοηθάω.
     var mine = all.filter(function (s) { return App.ownsTeacher(s.teacher_id); });
     var assisted = all.filter(function (s) { return !App.ownsTeacher(s.teacher_id); });
@@ -36,8 +44,10 @@
     view.innerHTML =
       '<h1>Μαθητές</h1>' +
       '<div class="card"><h2>Νέος μαθητής</h2>' +
+      '<p class="muted">Αν γράψεις email, ο μαθητής εγγράφεται αυτόματα και παίρνει email για να ορίσει κωδικό. Μέχρι τότε φαίνεται «Εκκρεμεί κωδικός». Χωρίς email, προστίθεται μόνο στη λίστα σου.</p>' +
       '<form data-form="add-student" class="row">' +
       '<div><label for="s-name">Ονοματεπώνυμο</label><input id="s-name" name="name" required></div>' +
+      '<div><label for="s-email">Email μαθητή</label><input id="s-email" name="email" type="email" autocomplete="off"></div>' +
       '<div><label for="s-grade">Τάξη</label><input id="s-grade" name="grade"></div>' +
       '<button class="primary" type="submit">Προσθήκη</button>' +
       '</form></div>' +
@@ -45,7 +55,7 @@
       (mine.length
         ? '<table><thead><tr><th>Όνομα</th><th>Τάξη</th><th></th></tr></thead><tbody>' +
         mine.map(function (s) {
-          return '<tr><td>' + esc(s.full_name) + '</td><td>' + esc(s.grade) + '</td>' +
+          return '<tr><td>' + esc(s.full_name) + pendingBadge(s) + '</td><td>' + esc(s.grade) + '</td>' +
             '<td><a href="#/student/' + esc(s.id) + '">Άνοιγμα</a></td></tr>';
         }).join('') + '</tbody></table>'
         : '<p class="empty">Δεν έχεις ακόμη μαθητές. Πρόσθεσε έναν ή περίμενε αιτήματα γονέων στη σελίδα Αιτήματα.</p>') +
@@ -53,18 +63,36 @@
   };
 
   App.forms['add-student'] = async function (f) {
-    await must(sb.from('students').insert({
-      teacher_id: App.state.profile.id,
-      full_name: f.elements['name'].value.trim(),
-      grade: f.elements['grade'].value.trim() || null
-    }));
+    var name = f.elements['name'].value.trim();
+    var email = f.elements['email'].value.trim();
+    var grade = f.elements['grade'].value.trim();
+    if (!email) {
+      await must(sb.from('students').insert({
+        teacher_id: App.state.profile.id,
+        full_name: name,
+        grade: grade || null
+      }));
+      await App.pages.students();
+      return;
+    }
+    // Με email: ο μαθητής εγγράφεται και παίρνει email για ορισμό κωδικού (Edge Function invite-student).
+    var res;
+    try {
+      res = await App.inviteStudent({ name: name, email: email, grade: grade });
+    } catch (e) {
+      await App.pages.students(); // ο μαθητής μπορεί να έχει προστεθεί και να έλειψε μόνο το email
+      throw e;
+    }
+    App.toast(res.invited
+      ? 'Ο μαθητής προστέθηκε. Στάλθηκε email στο ' + email + '. Θα είναι σε εκκρεμότητα μέχρι να ορίσει κωδικό.'
+      : 'Ο μαθητής προστέθηκε και συνδέθηκε με τον υπάρχοντα λογαριασμό.');
     await App.pages.students();
   };
 
   App.pages.student = async function (id) {
     App.renderNav('students');
     if (!App.canTeach()) { denyTeaching(); return; }
-    var rows = await must(sb.from('students').select('id, teacher_id, full_name, grade, user_id').eq('id', id).limit(1));
+    var rows = await must(sb.from('students').select('id, teacher_id, full_name, grade, user_id, profiles!user_id(full_name, email, password_set)').eq('id', id).limit(1));
     if (!rows.length) { view.innerHTML = '<div class="card"><p>Δεν βρέθηκε ο μαθητής.</p></div>'; return; }
     var s = rows[0];
     if (!App.ownsTeacher(s.teacher_id)) {
@@ -79,6 +107,25 @@
     var dir = await must(sb.rpc('teacher_directory'));
     var assigned = assistants.map(function (a) { return a.assistant_id; });
     var collabs = dir.filter(function (d) { return d.collab_status === 'accepted' && assigned.indexOf(d.id) === -1; });
+
+    // Κατάσταση λογαριασμού μαθητή: ενεργός, σε εκκρεμότητα (χωρίς κωδικό) ή χωρίς λογαριασμό.
+    function accountHtml(st, inv) {
+      var acc = st.profiles;
+      var hasInvite = inv.some(function (i) { return i.relation === 'student'; });
+      if (st.user_id && acc && !acc.password_set) {
+        return '<p><span class="badge pending">Εκκρεμεί κωδικός</span> ' + esc(acc.email) +
+          '<br><span class="muted">Ο μαθητής δεν έχει ορίσει ακόμη κωδικό. Αν δεν βρίσκει το email, στείλε το ξανά.</span></p>' +
+          '<p><button class="primary" data-action="resend-password" data-email="' + esc(acc.email) + '">Αποστολή email ξανά</button></p>';
+      }
+      if (st.user_id) {
+        return '<p><span class="badge approved">Ενεργός</span> ' + (acc ? esc(acc.email) : 'συνδεδεμένος λογαριασμός') + '</p>';
+      }
+      if (hasInvite) {
+        return '<p><span class="badge pending">Εκκρεμεί εγγραφή</span> <span class="muted">Δεν έχει δημιουργηθεί ακόμη λογαριασμός.</span></p>' +
+          '<p><button class="primary" data-action="resend-invite" data-student="' + esc(st.id) + '">Αποστολή email πρόσκλησης</button></p>';
+      }
+      return '<p class="muted">Δεν έχει συνδεθεί λογαριασμός. Πρόσθεσε email παραπάνω για να στείλεις πρόσκληση.</p>';
+    }
 
     function person(p) {
       return p && p.profiles ? esc(p.profiles.full_name) + ' <span class="muted">(' + esc(p.profiles.email) + ')</span>' : '';
@@ -117,7 +164,7 @@
           return '<tr><td>' + person(p) + '</td><td><button class="danger" data-action="unlink-parent" data-id="' + esc(p.parent_id) + '" data-student="' + esc(s.id) + '">Αποσύνδεση</button></td></tr>';
         }).join('') + '</tbody></table>'
         : '<p class="empty">Κανένας συνδεδεμένος γονέας.</p>') +
-      '<p class="muted">Λογαριασμός μαθητή: ' + (s.user_id ? 'συνδεδεμένος' : 'δεν έχει συνδεθεί ακόμη') + '</p>' +
+      '<h2 style="margin-top:16px">Λογαριασμός μαθητή</h2>' + accountHtml(s, invites) +
       '</div>' +
 
       '<div class="card"><h2>Βοηθοί</h2>' +
@@ -161,6 +208,20 @@
     }));
     App.toast('Καταχωρήθηκε.');
     await App.pages.student(sid);
+  };
+
+  // Νέα αποστολή email: πρόσκληση (όταν δεν υπάρχει ακόμη λογαριασμός)...
+  App.actions['resend-invite'] = async function (t) {
+    var sid = t.getAttribute('data-student');
+    await App.inviteStudent({ student_id: sid });
+    App.toast('Το email στάλθηκε.');
+    await App.pages.student(sid);
+  };
+  // ... ή σύνδεσμος ορισμού κωδικού (όταν ο λογαριασμός υπάρχει αλλά δεν έχει κωδικό).
+  App.actions['resend-password'] = async function (t) {
+    var r = await sb.auth.resetPasswordForEmail(t.getAttribute('data-email'));
+    if (r.error) { throw new Error(r.error.message); }
+    App.toast('Στάλθηκε email για ορισμό κωδικού.');
   };
 
   App.forms['add-assistant'] = async function (f) {

@@ -28,6 +28,8 @@ create table if not exists public.profiles (
 alter table public.profiles add column if not exists can_request boolean not null default false;
 -- Διαθεσιμότητα εκπαιδευτικού: δέχεται νέα αιτήματα γονέων / νέες προσκλήσεις συνεργασίας.
 -- Δεν επηρεάζει όσα έχουν ήδη γίνει. Τα αλλάζει ο ίδιος ο χρήστης.
+-- false = ο χρήστης προσκλήθηκε από εκπαιδευτικό και δεν έχει ορίσει ακόμη κωδικό (σε εκκρεμότητα).
+alter table public.profiles add column if not exists password_set boolean not null default true;
 alter table public.profiles add column if not exists accepting_requests boolean not null default true;
 alter table public.profiles add column if not exists accepting_collabs boolean not null default true;
 
@@ -326,6 +328,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   chosen text := coalesce(new.raw_user_meta_data->>'account_type', 'student');
   can_req boolean := false;
+  pw_set boolean := coalesce(new.raw_user_meta_data->>'invited', '') <> 'true';
 begin
   -- Επιλογές εγγραφής: teacher (βοηθητικός μέχρι να εγκριθεί), family (γονέας ή ενήλικος μαθητής),
   -- student (ανήλικος μαθητής). Ο admin ορίζεται ΜΟΝΟ από τη βάση.
@@ -336,10 +339,10 @@ begin
     chosen := 'student';
   end if;
 
-  insert into public.profiles (id, email, full_name, role, can_request)
+  insert into public.profiles (id, email, full_name, role, can_request, password_set)
   values (new.id, new.email,
           coalesce(new.raw_user_meta_data->>'full_name', new.email),
-          chosen, can_req);
+          chosen, can_req, pw_set);
 
   insert into public.student_parents (student_id, parent_id)
     select student_id, new.id from public.invites
@@ -454,6 +457,52 @@ begin
   insert into public.invites (email, student_id, relation) values (em, sid, rel)
     on conflict do nothing;
   return 'ok';
+end $$;
+
+-- Νέος μαθητής από τον εκπαιδευτικό, με email. Φτιάχνει τον μαθητή και καταχωρεί την πρόσκληση.
+-- Επιστρέφει send_invite = true όταν το email δεν έχει λογαριασμό: τότε η Edge Function invite-student
+-- στέλνει το email για ορισμό κωδικού. Η αποστολή χρειάζεται κλειδί υπηρεσίας, γι' αυτό δεν γίνεται εδώ.
+create or replace function public.add_student_invite(p_name text, p_email text, p_grade text)
+returns table (student_id uuid, send_invite boolean)
+language plpgsql security definer set search_path = public as $$
+declare
+  em text := lower(trim(coalesce(p_email,'')));
+  sid uuid;
+begin
+  if not public.my_teacher_ok() then
+    raise exception 'Χρειάζεται εγκεκριμένος εκπαιδευτικός';
+  end if;
+  if coalesce(trim(p_name),'') = '' or length(p_name) > 100 or length(coalesce(p_grade,'')) > 50 then
+    raise exception 'Έλεγξε το όνομα και την τάξη';
+  end if;
+  if em !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' or length(em) > 254 then
+    raise exception 'Άκυρο email';
+  end if;
+  -- Όριο: κάθε πρόσκληση στέλνει email, άρα περιορίζουμε τις εκκρεμείς ανά εκπαιδευτικό.
+  if (select count(*) from public.invites i join public.students s on s.id = i.student_id
+        where s.teacher_id = auth.uid() and i.relation = 'student')
+   + (select count(*) from public.students s join public.profiles p on p.id = s.user_id
+        where s.teacher_id = auth.uid() and not p.password_set) >= 30 then
+    raise exception 'Έχεις πολλούς μαθητές σε εκκρεμότητα. Περίμενε να ορίσουν κωδικό.';
+  end if;
+  insert into public.students (teacher_id, full_name, grade)
+    values (auth.uid(), trim(p_name), nullif(trim(p_grade),'')) returning id into sid;
+  perform public.add_access(sid, em, 'student');
+  return query select sid,
+    exists (select 1 from public.invites i where i.student_id = sid and i.relation = 'student');
+end $$;
+
+-- Email εκκρεμούς πρόσκλησης μαθητή (για να ξαναστείλει η Edge Function το email). Μόνο ο εκπαιδευτικός του μαθητή.
+create or replace function public.pending_student_invite(sid uuid)
+returns text
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not (public.is_admin() or exists (
+      select 1 from public.students s where s.id = sid and s.teacher_id = auth.uid() and public.my_teacher_ok())) then
+    raise exception 'Δεν έχεις δικαίωμα σε αυτόν τον μαθητή';
+  end if;
+  return (select i.email from public.invites i
+            where i.student_id = sid and i.relation = 'student' order by i.created_at limit 1);
 end $$;
 
 -- Ανάθεση συνεργάτη ως βοηθού σε μαθητή. Απαιτεί αποδεκτή συνεργασία και εγκεκριμένο βοηθό.
@@ -860,6 +909,10 @@ revoke execute on function public.create_meeting(uuid, text, uuid, timestamptz, 
 grant execute on function public.create_meeting(uuid, text, uuid, timestamptz, timestamptz, text, text) to authenticated;
 revoke execute on function public.add_access(uuid, text, text) from public;
 revoke execute on function public.add_assistant(uuid, uuid) from public;
+revoke execute on function public.add_student_invite(text, text, text) from public;
+revoke execute on function public.pending_student_invite(uuid) from public;
+grant execute on function public.add_student_invite(text, text, text) to authenticated;
+grant execute on function public.pending_student_invite(uuid) to authenticated;
 revoke execute on function public.save_application(text, text) from public;
 revoke execute on function public.submit_application() from public;
 revoke execute on function public.review_application(uuid, boolean, text) from public;

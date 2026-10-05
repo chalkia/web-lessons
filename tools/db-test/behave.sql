@@ -262,6 +262,47 @@ begin
   perform t.ok('βλέπει και τις ώρες άλλων βοηθών για τον ίδιο μαθητή', t.n('select count(*) from support_sessions')=2);
   perform t.fails('ο βοηθητικός δεν φτιάχνει ώρα υποστήριξης', format($q$select create_support_session(%L, array[%L]::uuid[], now(), now()+interval '1 hour', null)$q$, '00000000-0000-0000-0000-0000000000d1', s1));
 
+  -- Νέος μαθητής με email (πρόσκληση για ορισμό κωδικού)
+  perform t.as_user(t1);
+  select x.student_id into mid from add_student_invite('Νέος Μαθητής','Nea@X.gr','Α Γυμνασίου') x where x.send_invite;
+  perform t.ok('νέος μαθητής: ζητά αποστολή email όταν δεν υπάρχει λογαριασμός', mid is not null);
+  perform t.ok('ο μαθητής ανήκει στον εκπαιδευτικό', (select teacher_id from students where id=mid)=t1);
+  perform t.ok('καταχωρήθηκε πρόσκληση με πεζά γράμματα', t.n(format($q$select count(*) from invites where student_id=%L and email='nea@x.gr'$q$, mid))=1);
+  perform t.ok('εκκρεμής πρόσκληση: επιστρέφεται το email', pending_student_invite(mid)='nea@x.gr');
+  perform t.as_user(t2);
+  perform t.fails('άλλος εκπαιδευτικός δεν βλέπει εκκρεμή πρόσκληση', format($q$select pending_student_invite(%L)$q$, mid));
+  perform t.as_user(t1);
+  select x.student_id into rid from add_student_invite('Με Λογαριασμό','p1@x.gr',null) x where not x.send_invite;
+  perform t.ok('υπάρχον email: συνδέεται αμέσως, χωρίς email πρόσκλησης', rid is not null and (select user_id from students where id=rid)=p1);
+  perform t.fails('άκυρο email', $q$select * from add_student_invite('Χ','όχι-email',null)$q$);
+  perform t.fails('κενό όνομα', $q$select * from add_student_invite('  ','ok@x.gr',null)$q$);
+  perform t.as_user('00000000-0000-0000-0000-0000000000d1');
+  perform t.fails('βοηθητικός δεν προσθέτει μαθητή με email', $q$select * from add_student_invite('Χ','ok2@x.gr',null)$q$);
+  perform t.as_user(p2);
+  perform t.fails('γονέας δεν προσθέτει μαθητή με email', $q$select * from add_student_invite('Χ','ok3@x.gr',null)$q$);
+  perform t.as_super();
+  -- Ο χρήστης δημιουργείται από πρόσκληση (invited=true): εκκρεμής μέχρι να ορίσει κωδικό
+  insert into auth.users(id,email,raw_user_meta_data) values ('00000000-0000-0000-0000-0000000000e1','nea@x.gr','{"full_name":"Νέος Μαθητής","account_type":"student","invited":"true"}');
+  perform t.ok('προσκεκλημένος: password_set = false', not (select password_set from profiles where id='00000000-0000-0000-0000-0000000000e1'));
+  perform t.ok('προσκεκλημένος: συνδέθηκε με τον μαθητή', (select user_id from students where id=mid)='00000000-0000-0000-0000-0000000000e1');
+  perform t.ok('η πρόσκληση σβήστηκε μετά τη σύνδεση', t.n(format($q$select count(*) from invites where student_id=%L$q$, mid))=0);
+  perform t.ok('κανονική εγγραφή: password_set = true', (select password_set from profiles where id=p1));
+  perform t.as_user(t1);
+  perform t.ok('ο εκπαιδευτικός βλέπει ότι ο μαθητής είναι σε εκκρεμότητα', t.n(format($q$select count(*) from profiles where id=%L and not password_set$q$, '00000000-0000-0000-0000-0000000000e1'))=1);
+  perform t.as_user('00000000-0000-0000-0000-0000000000e1');
+  update profiles set password_set=true where id='00000000-0000-0000-0000-0000000000e1';
+  perform t.as_super(); perform t.ok('ο μαθητής ενεργοποιείται όταν ορίσει κωδικό', (select password_set from profiles where id='00000000-0000-0000-0000-0000000000e1'));
+  perform t.as_user('00000000-0000-0000-0000-0000000000e1');
+  perform t.fails('ο μαθητής δεν αλλάζει ρόλο', format($q$update profiles set role='teacher' where id=%L$q$, '00000000-0000-0000-0000-0000000000e1'));
+  -- Όριο εκκρεμών προσκλήσεων
+  perform t.as_user(t3);
+  for n in 1..30 loop
+    perform add_student_invite('Μαζικός '||n, 'bulk'||n||'@x.gr', null);
+  end loop;
+  perform t.fails('όριο 30 εκκρεμών προσκλήσεων', $q$select * from add_student_invite('Ένας ακόμη','bulk31@x.gr',null)$q$);
+  perform t.as_super(); reset role; set local role anon;
+  perform t.fails('ανώνυμος: add_student_invite', $q$select * from add_student_invite('Χ','a@x.gr',null)$q$);
+
   -- Ανώνυμος και Storage
   perform t.as_super(); reset role; set local role anon;
   perform t.fails('ανώνυμος: κατάλογος', 'select * from teacher_directory()');

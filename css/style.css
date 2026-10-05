@@ -105,3 +105,4 @@ label.field { display: block; }
 label.field input, label.field textarea, label.field select { margin-top: 4px; }
 .row-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
 .row-line select { width: auto; }
+.error { color: #b00020; font-weight: 600; }

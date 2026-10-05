@@ -20,6 +20,7 @@
       App.renderAuth();
       return;
     }
+    if (state.needPassword) { App.renderSetPassword(); return; }
     if (!state.profile) { await loadProfile(); }
 
     var hash = (location.hash || '#/').replace(/^#\/?/, '');
@@ -73,6 +74,7 @@
 
   sb.auth.onAuthStateChange(function (event, session) {
     state.session = session;
+    if (event === 'PASSWORD_RECOVERY') { state.needPassword = true; }
     if (!session) { state.profile = null; state.application = null; }
     // setTimeout: η Supabase προειδοποιεί να μην τρέχουν κλήσεις βάσης μέσα στο callback (κίνδυνος κλειδώματος).
     setTimeout(function () { App.run(route); }, 0);

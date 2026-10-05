@@ -12,8 +12,18 @@
   App.renderAuth = function () {
     el('topbar').hidden = true;
     var reg = App.state.authMode === 'register';
+    var forgot = App.state.authMode === 'forgot';
+    if (forgot) {
+      view.innerHTML = '<div class="card narrow"><h1>Ξέχασα τον κωδικό</h1>' +
+        '<p class="muted">Γράψε το email σου και θα σου στείλουμε σύνδεσμο για να ορίσεις νέο κωδικό.</p>' +
+        '<form data-form="reset-request"><label for="r-email">Email</label><input id="r-email" name="email" type="email" required>' +
+        '<p><button class="primary" type="submit">Αποστολή email</button></p></form>' +
+        '<p class="muted"><a href="#" data-action="back-login">← Πίσω στην είσοδο</a></p></div>';
+      return;
+    }
     view.innerHTML =
       '<div class="card narrow">' +
+      (App.state.authError ? '<p class="error">' + esc(App.state.authError) + '</p>' : '') +
       '<h1>' + (reg ? 'Εγγραφή' : 'Είσοδος') + '</h1>' +
       '<form data-form="auth">' +
       (reg ? '<label for="a-name">Ονοματεπώνυμο</label><input id="a-name" name="name" required>' : '') +
@@ -26,11 +36,51 @@
       '<label for="a-pass">Κωδικός</label><input id="a-pass" name="password" type="password" minlength="8" required>' +
       '<p><button class="primary" type="submit">' + (reg ? 'Εγγραφή' : 'Είσοδος') + '</button></p>' +
       '</form>' +
+      (reg ? '' : '<p class="muted"><a href="#" data-action="forgot-password">Ξέχασα τον κωδικό</a></p>') +
       '<p class="muted">' + (reg
         ? 'Έχεις λογαριασμό; <a href="#" data-action="toggle-auth">Είσοδος</a>'
         : 'Νέος χρήστης; <a href="#" data-action="toggle-auth">Εγγραφή</a>') + '</p>' +
       (reg ? '<p class="muted">Αν σε έχει προσκαλέσει εκπαιδευτικός, γράψε το ίδιο email που του έδωσες. Έτσι συνδέεσαι αυτόματα με τον μαθητή.</p>' : '') +
       '</div>';
+  };
+
+  App.actions['forgot-password'] = function () { App.state.authMode = 'forgot'; App.renderAuth(); };
+  App.actions['back-login'] = function () { App.state.authMode = 'login'; App.renderAuth(); };
+
+  App.forms['reset-request'] = async function (f) {
+    var r = await sb.auth.resetPasswordForEmail(f.elements['email'].value.trim());
+    if (r.error) { throw new Error(r.error.message); }
+    // Ίδιο μήνυμα είτε υπάρχει λογαριασμός είτε όχι.
+    App.toast('Αν το email έχει λογαριασμό, θα λάβεις σύνδεσμο σε λίγα λεπτά.');
+    App.state.authMode = 'login';
+    App.renderAuth();
+  };
+
+  // Οθόνη ορισμού κωδικού: ανοίγει από τον σύνδεσμο πρόσκλησης ή επαναφοράς.
+  App.renderSetPassword = function () {
+    el('topbar').hidden = true;
+    view.innerHTML = '<div class="card narrow"><h1>Ορισμός κωδικού</h1>' +
+      '<p class="muted">Διάλεξε κωδικό για να ολοκληρωθεί ο λογαριασμός σου. Τουλάχιστον 8 χαρακτήρες.</p>' +
+      '<form data-form="set-password">' +
+      '<label for="np-1">Νέος κωδικός</label><input id="np-1" name="p1" type="password" minlength="8" autocomplete="new-password" required>' +
+      '<label for="np-2">Ξανά ο κωδικός</label><input id="np-2" name="p2" type="password" minlength="8" autocomplete="new-password" required>' +
+      '<p><button class="primary" type="submit">Αποθήκευση κωδικού</button></p></form></div>';
+  };
+
+  App.forms['set-password'] = async function (f) {
+    var p1 = f.elements['p1'].value;
+    if (p1.length < 8) { throw new Error('Ο κωδικός θέλει τουλάχιστον 8 χαρακτήρες.'); }
+    if (p1 !== f.elements['p2'].value) { throw new Error('Οι δύο κωδικοί δεν ταιριάζουν.'); }
+    var u = await sb.auth.updateUser({ password: p1 });
+    if (u.error) { throw new Error(u.error.message); }
+    // Ο εκπαιδευτικός βλέπει ότι ο λογαριασμός ολοκληρώθηκε (δεν είναι πια σε εκκρεμότητα).
+    var rows = await must(sb.from('profiles').update({ password_set: true }).eq('id', App.state.session.user.id).select('id'));
+    if (!rows.length) { throw new Error('Ο κωδικός αποθηκεύτηκε, αλλά δεν ενημερώθηκε η κατάσταση του λογαριασμού.'); }
+    App.state.needPassword = false;
+    App.state.profile = null;
+    App.toast('Ο κωδικός ορίστηκε. Καλώς ήρθες!');
+    location.hash = '#/';
+    await App.route();
   };
 
   App.actions['toggle-auth'] = function () {

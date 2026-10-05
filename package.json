@@ -4,6 +4,6 @@
   "version": "0.1.0",
   "description": "Πλατφόρμα εξ αποστάσεως ιδιαιτέρων (Supabase + GitHub Pages)",
   "scripts": {
-    "check": "node tools/check.js"
+    "check": "node tools/check.js && node tools/edge-test/run.js"
   }
 }

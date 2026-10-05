@@ -143,6 +143,43 @@ for (const f of jsFiles.filter((x) => !x.includes(path.sep + 'tools' + path.sep)
   }
 }
 
+// Edge Functions: κάθε functions.invoke('όνομα') πρέπει να έχει φάκελο supabase/functions/όνομα/index.ts,
+// και οι rpc μέσα στις συναρτήσεις (TypeScript) ελέγχονται όπως και στα αρχεία JS.
+const fnDir = path.join(root, 'supabase', 'functions');
+const edgeNames = fs.existsSync(fnDir) ? fs.readdirSync(fnDir).filter((n) => fs.existsSync(path.join(fnDir, n, 'index.ts'))) : [];
+for (const f of jsFiles.filter((x) => !x.includes(path.sep + 'tools' + path.sep))) {
+  const src = fs.readFileSync(f, 'utf8');
+  const iRe = /functions\.invoke\(\s*'([\w-]+)'/g;
+  let im;
+  while ((im = iRe.exec(src))) {
+    if (!edgeNames.includes(im[1])) { findings.push('ΑΝΥΠΑΡΚΤΗ EDGE FUNCTION ' + im[1] + ' (' + path.relative(root, f) + ')'); }
+  }
+}
+for (const name of edgeNames) {
+  const f = path.join(fnDir, name, 'index.ts');
+  const src = fs.readFileSync(f, 'utf8');
+  const rel = path.relative(root, f);
+  const tRe = /\.rpc\(\s*"(\w+)"(?:,\s*\{([\s\S]*?)\})?\s*\)/g;
+  let m;
+  while ((m = tRe.exec(src))) {
+    if (!fns[m[1]]) { findings.push('ΑΝΥΠΑΡΚΤΗ RPC ' + m[1] + ' (' + rel + ')'); continue; }
+    const kRe = /(?:^|[,{\s])(\w+)\s*:/g; let k;
+    while ((k = kRe.exec(m[2] || ''))) {
+      if (!fns[m[1]].has(k[1])) { findings.push('ΑΝΥΠΑΡΚΤΗ ΠΑΡΑΜΕΤΡΟΣ ' + m[1] + '(' + k[1] + ') (' + rel + ')'); }
+    }
+  }
+  const fromRe = /\.from\(\s*"(\w+)"\s*\)/g;
+  while ((m = fromRe.exec(src))) {
+    if (!tables[m[1]]) { findings.push('ΑΝΥΠΑΡΚΤΟΣ ΠΙΝΑΚΑΣ ' + m[1] + ' (' + rel + ')'); }
+  }
+  // Σύνταξη: το αρχείο είναι JavaScript συμβατό με TypeScript, άρα ελέγχεται ως ενότητα .mjs
+  const tmp = path.join(require('os').tmpdir(), 'edge-syntax-' + name + '.mjs');
+  fs.writeFileSync(tmp, src);
+  const r = spawnSync(process.execPath, ['--check', tmp], { encoding: 'utf8' });
+  fs.unlinkSync(tmp);
+  if (r.status !== 0) { findings.push('ΣΥΝΤΑΞΗ ' + rel + '\n' + r.stderr.trim()); }
+}
+
 if (findings.length) {
   console.error('ΕΥΡΗΜΑΤΑ: ' + findings.length + '\n- ' + findings.join('\n- '));
   process.exit(1);
